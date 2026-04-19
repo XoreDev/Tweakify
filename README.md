@@ -1,5 +1,7 @@
 # Tweakify
 
+[Download Latest Release](https://github.com/XoreDev/Tweakify/releases/latest)
+
 Windows tuning, startup cleanup, and diagnostics in a staged desktop workflow.
 
 Tweakify is a source-first PySide6 app for reviewing Windows tweaks before you apply them. It keeps the fast utility feel of a tweak tool, but adds a safer review rail, clearer diagnostics, restore support, and a portable release package.
