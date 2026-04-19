@@ -1,0 +1,13 @@
+[project]
+name = "tweakify"
+version = "1.0.0"
+description = "A PySide6 Windows tuning dashboard with staged review, diagnostics, and portable packaging."
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "PySide6>=6.8",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
