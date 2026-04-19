@@ -6,6 +6,12 @@ Windows tuning, startup cleanup, and diagnostics in a staged desktop workflow.
 
 Tweakify is a source-first PySide6 app for reviewing Windows tweaks before you apply them. It keeps the fast utility feel of a tweak tool, but adds a safer review rail, clearer diagnostics, restore support, and a portable release package.
 
+Tweakify originally started as a small collaborative project, but was eventually abandoned.
+
+After three years, I revived and rebuilt it from the ground up, fixing major issues, improving stability, and turning it into a usable tool.
+
+Tweakify is now a functional, open-source Windows optimizer focused on performance, clarity, and transparency, so users can see exactly what they’re running on their systems.
+
 ## Why It Exists
 
 - Stage changes before they touch the machine.
