@@ -20,18 +20,66 @@ from app.domain.models import DependencyInstallResult, MachineContext, SnapshotW
 from app.platform.processes import hidden_process_kwargs
 
 
+POWER_PLAN_GUIDS = {
+    "balanced": "381b4222-f694-41f0-9685-ff5bb260df2e",
+    "high performance": "8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c",
+    "power saver": "a1841308-3541-4fab-bc81-f71556f20b4a",
+    "ultimate performance": "e9a42b02-d5df-448d-aa00-03f14749eb61",
+}
+DOWNLOAD_TIMEOUT_SECONDS = 30
+MAX_DOWNLOAD_BYTES = 64 * 1024 * 1024
+ERROR_SERVICE_ALREADY_RUNNING = 1056
+ERROR_SERVICE_NOT_ACTIVE = 1062
+ERROR_SERVICE_DOES_NOT_EXIST = 1060
+
+
+def ps_quote(value: str) -> str:
+    """Quote a value as a PowerShell single-quoted string literal."""
+    return "'" + str(value).replace("'", "''") + "'"
+
+
+def _folder_size(path: Path, limit_files: int = 200_000) -> int:
+    total = 0
+    seen = 0
+    try:
+        if path.is_file():
+            return path.stat().st_size
+        for root, _dirs, files in os.walk(path, onerror=lambda _exc: None):
+            for name in files:
+                seen += 1
+                if seen > limit_files:
+                    return total
+                try:
+                    total += os.lstat(os.path.join(root, name)).st_size
+                except OSError:
+                    continue
+    except OSError:
+        return total
+    return total
+
+
 class InMemoryPlatformFacade:
     def __init__(self, is_admin: bool = False) -> None:
         self.is_admin = is_admin
         self._probe_cache: dict[tuple[object, ...], Any] | None = None
         self._probe_cache_depth = 0
         self.registry: dict[tuple[str, str], Any] = {}
+        self.registry_types: dict[tuple[str, str], str] = {}
         self.services: dict[str, dict[str, Any]] = {
             "XblAuthManager": {"start_mode": "manual", "running": True},
             "XblGameSave": {"start_mode": "manual", "running": True},
             "bthserv": {"start_mode": "manual", "running": True},
             "BITS": {"start_mode": "auto", "running": True},
             "DiagTrack": {"start_mode": "auto", "running": True},
+            "SysMain": {"start_mode": "auto", "running": True},
+            "WSearch": {"start_mode": "delayed-auto", "running": True},
+            "Spooler": {"start_mode": "auto", "running": True},
+            "Fax": {"start_mode": "manual", "running": False},
+            "RemoteRegistry": {"start_mode": "disabled", "running": False},
+            "MapsBroker": {"start_mode": "delayed-auto", "running": False},
+            "WerSvc": {"start_mode": "manual", "running": False},
+            "dmwappushservice": {"start_mode": "manual", "running": False},
+            "RetailDemo": {"start_mode": "manual", "running": False},
         }
         self.interface_values: dict[str, dict[str, Any]] = {
             "ethernet0": {},
@@ -129,6 +177,18 @@ class InMemoryPlatformFacade:
         }
         self.net_features: dict[str, bool] = {"lso": True}
         self.opened_urls: list[str] = []
+        self.power_settings: dict[tuple[str, str], dict[str, int | None]] = {}
+        self.hibernate_enabled: bool | None = True
+        self.mmagent: dict[str, bool] = {"MemoryCompression": True}
+        self.dns_servers: dict[str, list[str]] = {"Ethernet": []}
+        self.gpu_vendors: tuple[str, ...] = ("NVIDIA",)
+        self.is_laptop = False
+        self.nvidia_profile_imports: list[dict[int, int]] = []
+        self.command_return_codes: dict[str, int] = {}
+        self.cleanup_sizes: dict[str, int] = {}
+        self.restore_point_result = True
+        self.net_adapter_properties: dict[str, dict[str, str | None]] = {"Ethernet": {"*EEE": "1", "*InterruptModeration": "1"}}
+        self.bcd_values: dict[str, str] = {}
 
     def snapshot_writer(self) -> SnapshotWriter:
         return SnapshotWriter()
@@ -182,6 +242,11 @@ class InMemoryPlatformFacade:
                 if (self.dependency_overrides.get("nvidiaInspector.exe") or self.nvidia_path)
                 else None,
                 bluetooth_devices=self.bluetooth_devices,
+                nvidia_profile_inspector_path=str(self.dependency_overrides.get("nvidiaProfileInspector.exe") or self.profile_inspector_path)
+                if (self.dependency_overrides.get("nvidiaProfileInspector.exe") or self.profile_inspector_path)
+                else None,
+                gpu_vendors=self.gpu_vendors,
+                is_laptop=self.is_laptop,
             ),
         )
 
@@ -193,16 +258,24 @@ class InMemoryPlatformFacade:
     def registry_get(self, path: str, name: str) -> Any:
         return self.registry.get((path, name))
 
+    def registry_get_typed(self, path: str, name: str) -> tuple[Any, str | None]:
+        key = (path, name)
+        if key not in self.registry:
+            return None, None
+        return self.registry[key], self.registry_types.get(key, "REG_DWORD")
+
     def registry_set(self, path: str, name: str, value: Any, value_type: str = "REG_DWORD") -> None:
         self.registry[(path, name)] = value
+        self.registry_types[(path, name)] = value_type
 
     def registry_delete(self, path: str, name: str) -> None:
         self.registry.pop((path, name), None)
+        self.registry_types.pop((path, name), None)
 
     def service_get(self, name: str) -> dict[str, Any]:
         service = self._cached_probe(
             ("service_get", name),
-            lambda: self.services.setdefault(name, {"start_mode": "manual", "running": False}).copy(),
+            lambda: dict(self.services.get(name, {"start_mode": "missing", "running": False})),
         )
         return dict(service)
 
@@ -222,6 +295,14 @@ class InMemoryPlatformFacade:
     def scheduled_task_set(self, name: str, enabled: bool) -> None:
         self.scheduled_tasks.setdefault(name, {"name": name, "enabled": True})["enabled"] = enabled
 
+    def scheduled_task_register(self, name: str, arguments: list[str]) -> None:
+        self.scheduled_tasks[name] = {"name": name, "enabled": True, "arguments": list(arguments)}
+        self.command_log.append(f"schtasks-create:{name}")
+
+    def scheduled_task_delete(self, name: str) -> None:
+        self.scheduled_tasks.pop(name, None)
+        self.command_log.append(f"schtasks-delete:{name}")
+
     def get_interface_value(self, name: str) -> dict[str, Any]:
         values = self._cached_probe(
             ("get_interface_value", name),
@@ -236,6 +317,12 @@ class InMemoryPlatformFacade:
     def clear_interface_value(self, name: str) -> None:
         for adapter in self.interface_values:
             self.interface_values[adapter].pop(name, None)
+
+    def set_interface_value_for(self, adapter: str, name: str, value: Any) -> None:
+        self.interface_values.setdefault(adapter, {})[name] = value
+
+    def clear_interface_value_for(self, adapter: str, name: str) -> None:
+        self.interface_values.get(adapter, {}).pop(name, None)
 
     def get_tcp_global(self, key: str) -> str | None:
         return self._cached_probe(("get_tcp_global", key), lambda: self.tcp_globals.get(key))
@@ -268,6 +355,70 @@ class InMemoryPlatformFacade:
     def power_set_active_plan(self, name: str) -> None:
         self.power_plan = name
         self.command_log.append(f"power:{name}")
+
+    def power_plan_matches(self, state: dict[str, Any], plan: str) -> bool:
+        return str(state.get("name", "")).lower() == plan.lower()
+
+    def power_setting_get(self, subgroup: str, setting: str) -> dict[str, int | None]:
+        return dict(self.power_settings.get((subgroup, setting), {"ac": 1, "dc": 1}))
+
+    def power_setting_set(self, subgroup: str, setting: str, ac: int | None, dc: int | None) -> None:
+        current = self.power_settings.setdefault((subgroup, setting), {"ac": 1, "dc": 1})
+        if ac is not None:
+            current["ac"] = ac
+        if dc is not None:
+            current["dc"] = dc
+        self.command_log.append(f"powercfg:{subgroup}/{setting}={ac},{dc}")
+
+    def hibernation_enabled(self) -> bool | None:
+        return self.hibernate_enabled
+
+    def hibernation_set(self, enabled: bool) -> None:
+        self.hibernate_enabled = enabled
+        self.command_log.append(f"hibernate:{enabled}")
+
+    def mmagent_get(self, feature: str) -> bool | None:
+        return self.mmagent.get(feature)
+
+    def mmagent_set(self, feature: str, enabled: bool) -> None:
+        self.mmagent[feature] = enabled
+        self.command_log.append(f"mmagent:{feature}={enabled}")
+
+    def dns_get_servers(self) -> dict[str, list[str]]:
+        return {alias: list(servers) for alias, servers in self.dns_servers.items()}
+
+    def dns_set_servers(self, alias: str, servers: list[str] | None) -> None:
+        self.dns_servers[alias] = list(servers or [])
+        self.command_log.append(f"dns:{alias}={','.join(servers or []) or 'dhcp'}")
+
+    def nvidia_profile_apply(self, settings: dict[int, int]) -> None:
+        if not (self.dependency_overrides.get("nvidiaProfileInspector.exe") or self.profile_inspector_path):
+            raise FileNotFoundError("nvidiaProfileInspector.exe is unavailable")
+        self.nvidia_profile_imports.append(dict(settings))
+        self.command_log.append("nvidia-profile:" + ",".join(f"{key}={value}" for key, value in settings.items()))
+
+    def cleanup_estimate(self, targets: dict[str, list[str]]) -> dict[str, int]:
+        return {target_id: int(self.cleanup_sizes.get(target_id, 0)) for target_id in targets}
+
+    def net_adapter_property_get(self, keyword: str) -> dict[str, str | None]:
+        return {adapter: values.get(keyword) for adapter, values in self.net_adapter_properties.items() if keyword in values}
+
+    def net_adapter_property_set(self, adapter: str, keyword: str, value: str) -> None:
+        self.net_adapter_properties.setdefault(adapter, {})[keyword] = value
+        self.command_log.append(f"nic:{adapter}:{keyword}={value}")
+
+    def bcd_get(self, name: str) -> str | None:
+        return self.bcd_values.get(name)
+
+    def bcd_set(self, name: str, value: str | None) -> None:
+        if value is None:
+            self.bcd_values.pop(name, None)
+        else:
+            self.bcd_values[name] = value
+        self.command_log.append(f"bcd:{name}={value}")
+
+    def network_latency(self, hosts: list[str]) -> dict[str, float | None]:
+        return {host: 12.0 for host in hosts}
 
     def display_get_current_refresh_rate(self) -> int:
         return self._cached_probe(("display_get_current_refresh_rate",), lambda: self.current_refresh_rate)
@@ -336,8 +487,9 @@ class InMemoryPlatformFacade:
     def _startup_folder_id(self, scope: str, original_path: str) -> str:
         return f"startup-folder:{scope}:{original_path}"
 
-    def run_command(self, command: list[str], description: str = "") -> None:
+    def run_command(self, command: list[str], description: str = "", timeout: int | None = None) -> int:
         self.command_log.append(" ".join(command) if not description else f"{description}: {' '.join(command)}")
+        return self.command_return_codes.get(command[0], 0)
 
     def detect_nvidia_inspector(self, base_dir: Path | str | None = None) -> Path | None:
         return self._cached_probe(
@@ -400,7 +552,7 @@ class InMemoryPlatformFacade:
 
     def create_restore_point(self, description: str) -> bool:
         self.command_log.append(f"restore-point:{description}")
-        return True
+        return self.restore_point_result
 
     def open_task_manager(self) -> None:
         self.command_log.append("taskmgr")
@@ -467,6 +619,8 @@ class InMemoryPlatformFacade:
 
 
 class WindowsPlatformFacade:
+    supports_elevated_helper = True
+
     def __init__(
         self,
         workspace_root: Path | str | None = None,
@@ -543,6 +697,7 @@ class WindowsPlatformFacade:
 
     def _machine_context_uncached(self) -> MachineContext:
         nvidia_path = self.detect_nvidia_inspector()
+        profile_path = self.detect_nvidia_profile_inspector_known_locations()
         return MachineContext(
             machine_name=os.environ.get("COMPUTERNAME", socket.gethostname()),
             windows_build=sys.getwindowsversion().build,
@@ -559,7 +714,32 @@ class WindowsPlatformFacade:
             is_admin=self.is_admin(),
             nvidia_inspector_path=str(nvidia_path) if nvidia_path else None,
             bluetooth_devices=self.bluetooth_device_count(),
+            nvidia_profile_inspector_path=str(profile_path) if profile_path else None,
+            gpu_vendors=self.gpu_vendors(),
+            is_laptop=self.is_laptop(),
         )
+
+    def gpu_vendors(self) -> tuple[str, ...]:
+        return self._cached_probe(("gpu_vendors",), self._gpu_vendors_uncached)
+
+    def _gpu_vendors_uncached(self) -> tuple[str, ...]:
+        names = self._read_cim_property("(Get-CimInstance Win32_VideoController).Name") or ""
+        vendors: list[str] = []
+        for line in names.splitlines():
+            lowered = line.lower()
+            for token, vendor in (("nvidia", "NVIDIA"), ("geforce", "NVIDIA"), ("radeon", "AMD"), ("amd", "AMD"), ("intel", "Intel")):
+                if token in lowered and vendor not in vendors:
+                    vendors.append(vendor)
+        return tuple(vendors)
+
+    def is_laptop(self) -> bool:
+        return self._cached_probe(("is_laptop",), self._is_laptop_uncached)
+
+    def _is_laptop_uncached(self) -> bool:
+        output = self._read_cim_property("(Get-CimInstance Win32_SystemEnclosure).ChassisTypes") or ""
+        # SMBIOS chassis types for portables: laptop, notebook, sub-notebook, tablet, convertible, detachable.
+        portable = {"8", "9", "10", "14", "30", "31", "32"}
+        return any(token.strip() in portable for token in output.split())
 
     def diagnostic_probe(self, startup_count: int | None = None) -> dict[str, Any]:
         system_drive = os.environ.get("SystemDrive", "C:")
@@ -585,12 +765,15 @@ class WindowsPlatformFacade:
             "top_idle_cpu_users": self.top_cpu_users(),
             "ram_pressure": self.memory_pressure(),
             "disk_free_percent": disk_percent,
+            "disk_free_bytes": free,
             "drive_type": self.system_drive_type(),
             "pending_updates": pending_updates,
             "vbs_status": vbs_status,
             "memory_integrity": memory_integrity,
             "indexing_state": self.service_get("WSearch")["start_mode"].title(),
             "delivery_optimization": self.service_get("DoSvc")["start_mode"].title(),
+            "uptime_hours": round(ctypes.windll.kernel32.GetTickCount64() / 3_600_000, 1),
+            "power_plan": self.power_get_active_plan().get("name", "Unknown"),
         }
 
     def startup_entry_count(self) -> int:
@@ -607,11 +790,37 @@ class WindowsPlatformFacade:
         except FileNotFoundError:
             return None
 
+    def registry_get_typed(self, path: str, name: str) -> tuple[Any, str | None]:
+        import winreg
+
+        hive, subkey = self._split_hive(path)
+        names = {
+            winreg.REG_SZ: "REG_SZ",
+            winreg.REG_EXPAND_SZ: "REG_EXPAND_SZ",
+            winreg.REG_DWORD: "REG_DWORD",
+            winreg.REG_QWORD: "REG_QWORD",
+            winreg.REG_MULTI_SZ: "REG_MULTI_SZ",
+            winreg.REG_BINARY: "REG_BINARY",
+        }
+        try:
+            with winreg.OpenKey(hive, subkey) as key:
+                value, value_type = winreg.QueryValueEx(key, name)
+        except FileNotFoundError:
+            return None, None
+        if isinstance(value, bytes):
+            # bytes are not JSON-serialisable; snapshots store them as hex.
+            return value.hex(), "REG_BINARY_HEX"
+        return value, names.get(value_type, "REG_SZ")
+
     def registry_set(self, path: str, name: str, value: Any, value_type: str = "REG_DWORD") -> None:
         import winreg
 
         hive, subkey = self._split_hive(path)
+        if value_type == "REG_BINARY_HEX":
+            value_type, value = "REG_BINARY", bytes.fromhex(str(value))
         reg_type = getattr(winreg, value_type, winreg.REG_DWORD)
+        if reg_type in (winreg.REG_DWORD, winreg.REG_QWORD) and not isinstance(value, int):
+            value = int(value)
         with winreg.CreateKeyEx(hive, subkey, 0, access=winreg.KEY_WRITE) as key:
             winreg.SetValueEx(key, name, 0, reg_type, value)
 
@@ -624,8 +833,8 @@ class WindowsPlatformFacade:
                 winreg.DeleteValue(key, name)
         except FileNotFoundError:
             return
-        except OSError:
-            return
+        # PermissionError and other OSErrors propagate: a delete that silently
+        # fails would be reported to the user as an applied change.
 
     def registry_key_exists(self, path: str) -> bool:
         import winreg
@@ -673,6 +882,8 @@ class WindowsPlatformFacade:
             text=True,
             check=False,
         )
+        if qc.returncode == ERROR_SERVICE_DOES_NOT_EXIST:
+            return {"start_mode": "missing", "running": False}
         start_mode = "unknown"
         for line in qc.stdout.splitlines():
             if "START_TYPE" in line:
@@ -681,20 +892,50 @@ class WindowsPlatformFacade:
                 elif "DEMAND_START" in line:
                     start_mode = "manual"
                 elif "AUTO_START" in line:
-                    start_mode = "auto"
+                    start_mode = "delayed-auto" if "DELAYED" in line else "auto"
+                elif "BOOT_START" in line:
+                    start_mode = "boot"
+                elif "SYSTEM_START" in line:
+                    start_mode = "system"
                 break
         running = "RUNNING" in query.stdout
         return {"start_mode": start_mode, "running": running}
 
     def service_set(self, name: str, start_mode: str) -> None:
-        mapping = {"manual": "demand", "auto": "auto", "disabled": "disabled"}
-        self._run_hidden(["sc", "config", name, f"start= {mapping[start_mode]}"], check=False)
+        mapping = {
+            "manual": "demand",
+            "auto": "auto",
+            "delayed-auto": "delayed-auto",
+            "disabled": "disabled",
+            "boot": "boot",
+            "system": "system",
+        }
+        # sc.exe needs "start=" and the mode as two separate arguments. Passing
+        # "start= demand" as one argument makes sc reject the call, so no service
+        # change was ever applied before this fix.
+        result = self._run_hidden(
+            ["sc", "config", name, "start=", mapping[start_mode]],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(f"sc config {name} failed ({result.returncode}): {self._tail(result)}")
 
     def service_stop(self, name: str) -> None:
-        self._run_hidden(["sc", "stop", name], check=False)
+        result = self._run_hidden(["sc", "stop", name], capture_output=True, text=True, check=False)
+        if result.returncode not in (0, ERROR_SERVICE_NOT_ACTIVE):
+            raise RuntimeError(f"sc stop {name} failed ({result.returncode}): {self._tail(result)}")
 
     def service_start(self, name: str) -> None:
-        self._run_hidden(["sc", "start", name], check=False)
+        result = self._run_hidden(["sc", "start", name], capture_output=True, text=True, check=False)
+        if result.returncode not in (0, ERROR_SERVICE_ALREADY_RUNNING):
+            raise RuntimeError(f"sc start {name} failed ({result.returncode}): {self._tail(result)}")
+
+    @staticmethod
+    def _tail(result) -> str:
+        text = ((getattr(result, "stdout", "") or "") + " " + (getattr(result, "stderr", "") or "")).strip()
+        return " ".join(text.split())[-240:] or "no output"
 
     def scheduled_task_get(self, name: str) -> dict[str, Any] | None:
         task = self._cached_probe(("scheduled_task_get", name), lambda: self._scheduled_task_get_uncached(name))
@@ -703,7 +944,7 @@ class WindowsPlatformFacade:
     def _scheduled_task_get_uncached(self, name: str) -> dict[str, Any] | None:
         task_path, task_name = self._split_task_name(name)
         script = (
-            f"$task = Get-ScheduledTask -TaskPath '{task_path}' -TaskName '{task_name}' -ErrorAction SilentlyContinue; "
+            f"$task = Get-ScheduledTask -TaskPath {ps_quote(task_path)} -TaskName {ps_quote(task_name)} -ErrorAction SilentlyContinue; "
             "if ($task) { if ($task.Settings.Enabled) { 'Enabled' } else { 'Disabled' } }"
         )
         output = self._run_hidden(
@@ -719,10 +960,39 @@ class WindowsPlatformFacade:
     def scheduled_task_set(self, name: str, enabled: bool) -> None:
         task_path, task_name = self._split_task_name(name)
         command = "Enable-ScheduledTask" if enabled else "Disable-ScheduledTask"
-        script = (
-            f"{command} -TaskPath '{task_path}' -TaskName '{task_name}' -ErrorAction SilentlyContinue | Out-Null"
+        script = f"{command} -TaskPath {ps_quote(task_path)} -TaskName {ps_quote(task_name)} -ErrorAction Stop | Out-Null"
+        result = self._run_hidden(
+            ["powershell", "-NoProfile", "-Command", script], capture_output=True, text=True, check=False
         )
-        self._run_hidden(["powershell", "-NoProfile", "-Command", script], check=False)
+        if result.returncode != 0:
+            raise RuntimeError(f"{command} {name} failed: {self._tail(result)}")
+
+    def scheduled_task_register(self, name: str, arguments: list[str]) -> None:
+        """Register a weekly task that runs this Tweakify install headless with `arguments`."""
+        interpreter = Path(sys.executable)
+        windowless = interpreter.with_name("pythonw.exe")
+        if windowless.exists():
+            interpreter = windowless
+        launcher = self.workspace_root / "Tweakify.py"
+        task_command = subprocess.list2cmdline([str(interpreter), str(launcher), *arguments])
+        if len(task_command) > 261:
+            raise RuntimeError("The Tweakify install path is too long for a scheduled task command.")
+        result = self._run_hidden(
+            ["schtasks", "/Create", "/TN", name, "/TR", task_command, "/SC", "WEEKLY", "/D", "SUN",
+             "/ST", "12:00", "/RL", "HIGHEST", "/F"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(f"schtasks /Create {name} failed: {self._tail(result)}")
+
+    def scheduled_task_delete(self, name: str) -> None:
+        if self._scheduled_task_get_uncached(name) is None:
+            return
+        result = self._run_hidden(["schtasks", "/Delete", "/TN", name, "/F"], capture_output=True, text=True, check=False)
+        if result.returncode != 0:
+            raise RuntimeError(f"schtasks /Delete {name} failed: {self._tail(result)}")
 
     def get_interface_value(self, name: str) -> dict[str, Any]:
         values = self._cached_probe(("get_interface_value", name), lambda: self._get_interface_value_uncached(name))
@@ -775,42 +1045,60 @@ class WindowsPlatformFacade:
             except OSError:
                 continue
 
+    def set_interface_value_for(self, adapter: str, name: str, value: Any) -> None:
+        self.registry_set(
+            rf"HKLM\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces\{adapter}", name, value, "REG_DWORD"
+        )
+
+    def clear_interface_value_for(self, adapter: str, name: str) -> None:
+        self.registry_delete(rf"HKLM\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces\{adapter}", name)
+
     def get_tcp_global(self, key: str) -> str | None:
         return self._cached_probe(("get_tcp_global", key), lambda: self._get_tcp_global_uncached(key))
 
     def _get_tcp_global_uncached(self, key: str) -> str | None:
+        return self._tcp_settings().get(key)
+
+    def _tcp_settings(self) -> dict[str, str]:
+        return self._cached_probe(("tcp_settings",), self._tcp_settings_uncached)
+
+    def _tcp_settings_uncached(self) -> dict[str, str]:
+        # The NetTCPIP cmdlets return enum names, which are not localized. netsh
+        # output is, so matching English labels failed on non-English Windows.
+        script = (
+            "$t = Get-NetTCPSetting -SettingName Internet -ErrorAction SilentlyContinue; "
+            "$o = Get-NetOffloadGlobalSetting -ErrorAction SilentlyContinue; "
+            "[pscustomobject]@{ autotuninglevel = \"$($t.AutoTuningLevelLocal)\"; "
+            "heuristics = \"$($t.ScalingHeuristics)\"; ecncapability = \"$($t.EcnCapability)\"; "
+            "rss = \"$($o.ReceiveSideScaling)\" } | ConvertTo-Json -Compress"
+        )
         output = self._run_hidden(
-            ["netsh", "int", "tcp", "show", "global"],
+            ["powershell", "-NoProfile", "-Command", script],
             capture_output=True,
             text=True,
             check=False,
-        ).stdout
-        mapping = {
-            "autotuninglevel": "Receive Window Auto-Tuning Level",
-            "chimney": "Chimney Offload State",
-            "dca": "Direct Cache Access (DCA)",
-            "rss": "Receive-Side Scaling State",
-            "ecncapability": "ECN Capability",
-        }
-        label = mapping.get(key)
-        if not label:
-            return None
-        for line in output.splitlines():
-            if label in line:
-                return line.split(":", 1)[-1].strip().lower()
-        return None
+        ).stdout.strip()
+        try:
+            payload = json.loads(output) if output else {}
+        except ValueError:
+            payload = {}
+        values = {key: str(value).strip().lower() for key, value in payload.items() if str(value).strip()}
+        # Normalise PowerShell enum names to the netsh vocabulary the actions use.
+        aliases = {"highlyrestricted": "highlyrestricted", "normal": "normal", "disabled": "disabled"}
+        if "autotuninglevel" in values:
+            values["autotuninglevel"] = aliases.get(values["autotuninglevel"], values["autotuninglevel"])
+        return values
 
     def set_tcp_global(self, key: str, value: str) -> None:
         if key == "heuristics":
-            self._run_hidden(["netsh", "int", "tcp", "set", "heuristics", value], check=False)
-            return
-        if key == "template":
-            self._run_hidden(
-                ["netsh", "int", "tcp", "set", "supplemental", f"template={value}"],
-                check=False,
-            )
-            return
-        self._run_hidden(["netsh", "int", "tcp", "set", "global", f"{key}={value}"], check=False)
+            command = ["netsh", "int", "tcp", "set", "heuristics", value]
+        elif key == "template":
+            command = ["netsh", "int", "tcp", "set", "supplemental", f"template={value}"]
+        else:
+            command = ["netsh", "int", "tcp", "set", "global", f"{key}={value}"]
+        result = self._run_hidden(command, capture_output=True, text=True, check=False)
+        if result.returncode != 0:
+            raise RuntimeError(f"{' '.join(command)} failed: {self._tail(result)}")
 
     def system_parameter_get(self, name: str) -> Any:
         mapping = {
@@ -904,15 +1192,222 @@ class WindowsPlatformFacade:
             return {"name": "Balanced"}
         return {"guid": match.group(1), "name": match.group(2)}
 
+    def _power_schemes(self) -> list[dict[str, str]]:
+        output = self._run_hidden(["powercfg", "/L"], capture_output=True, text=True, check=False).stdout
+        return [
+            {"guid": match.group(1).lower(), "name": match.group(2)}
+            for match in re.finditer(r"([A-Fa-f0-9]{8}-[A-Fa-f0-9\-]{27})\s+\((.+?)\)", output)
+        ]
+
+    def _resolve_power_plan(self, name: str) -> str:
+        lowered = name.lower()
+        if re.fullmatch(r"[a-f0-9]{8}-[a-f0-9\-]{27}", lowered):
+            return lowered
+        guid = POWER_PLAN_GUIDS.get(lowered)
+        schemes = self._power_schemes()
+        if guid and any(scheme["guid"] == guid for scheme in schemes):
+            return guid
+        if lowered == "ultimate performance":
+            # The Ultimate Performance scheme is hidden on most editions. It has
+            # to be duplicated from its template before it can be activated.
+            for scheme in schemes:
+                if "ultimate" in scheme["name"].lower():
+                    return scheme["guid"]
+            output = self._run_hidden(
+                ["powercfg", "-duplicatescheme", POWER_PLAN_GUIDS["ultimate performance"]],
+                capture_output=True,
+                text=True,
+                check=False,
+            ).stdout
+            match = re.search(r"([A-Fa-f0-9]{8}-[A-Fa-f0-9\-]{27})", output)
+            if match:
+                return match.group(1).lower()
+        if guid:
+            return guid
+        for scheme in schemes:
+            if scheme["name"].lower() == lowered:
+                return scheme["guid"]
+        raise RuntimeError(f"Power plan '{name}' is not available on this machine.")
+
     def power_set_active_plan(self, name: str) -> None:
-        aliases = {
-            "balanced": "SCHEME_BALANCED",
-            "high performance": "SCHEME_MIN",
-            "power saver": "SCHEME_MAX",
-            "ultimate performance": "e9a42b02-d5df-448d-aa00-03f14749eb61",
+        token = self._resolve_power_plan(name)
+        result = self._run_hidden(["powercfg", "/S", token], capture_output=True, text=True, check=False)
+        if result.returncode != 0:
+            raise RuntimeError(f"powercfg /S {token} failed: {self._tail(result)}")
+
+    def power_plan_matches(self, state: dict[str, Any], plan: str) -> bool:
+        guid = str(state.get("guid", "")).lower()
+        name = str(state.get("name", "")).lower()
+        lowered = plan.lower()
+        if lowered == "ultimate performance":
+            return guid == POWER_PLAN_GUIDS[lowered] or "ultimate" in name
+        return guid == POWER_PLAN_GUIDS.get(lowered) or name == lowered
+
+    def power_setting_get(self, subgroup: str, setting: str) -> dict[str, int | None]:
+        output = self._run_hidden(
+            ["powercfg", "/QH", "SCHEME_CURRENT", subgroup, setting],
+            capture_output=True,
+            text=True,
+            check=False,
+        ).stdout
+        indexes = re.findall(r":\s*0x([0-9A-Fa-f]{8})\s*$", output, flags=re.MULTILINE)
+        # /QH prints min/max/increment lines for ranged settings before the two
+        # current-index lines, so the last two hex values are always AC then DC.
+        if len(indexes) < 2:
+            return {"ac": None, "dc": None}
+        return {"ac": int(indexes[-2], 16), "dc": int(indexes[-1], 16)}
+
+    def power_setting_set(self, subgroup: str, setting: str, ac: int | None, dc: int | None) -> None:
+        for flag, value in (("/SETACVALUEINDEX", ac), ("/SETDCVALUEINDEX", dc)):
+            if value is None:
+                continue
+            result = self._run_hidden(
+                ["powercfg", flag, "SCHEME_CURRENT", subgroup, setting, str(int(value))],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if result.returncode != 0:
+                raise RuntimeError(f"powercfg {flag} {setting} failed: {self._tail(result)}")
+        self._run_hidden(["powercfg", "/S", "SCHEME_CURRENT"], check=False)
+
+    def hibernation_enabled(self) -> bool | None:
+        value = self.registry_get(r"HKLM\SYSTEM\CurrentControlSet\Control\Power", "HibernateEnabled")
+        return None if value is None else bool(value)
+
+    def hibernation_set(self, enabled: bool) -> None:
+        result = self._run_hidden(
+            ["powercfg", "/hibernate", "on" if enabled else "off"], capture_output=True, text=True, check=False
+        )
+        if result.returncode != 0:
+            raise RuntimeError(f"powercfg /hibernate failed: {self._tail(result)}")
+
+    def mmagent_get(self, feature: str) -> bool | None:
+        output = self._read_cim_property(f"(Get-MMAgent -ErrorAction SilentlyContinue).{feature}")
+        if output is None:
+            return None
+        return output.strip().lower() == "true"
+
+    def mmagent_set(self, feature: str, enabled: bool) -> None:
+        verb = "Enable-MMAgent" if enabled else "Disable-MMAgent"
+        result = self._run_hidden(
+            ["powershell", "-NoProfile", "-Command", f"{verb} -{feature} -ErrorAction Stop"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(f"{verb} -{feature} failed: {self._tail(result)}")
+
+    def dns_get_servers(self) -> dict[str, list[str]]:
+        return self._cached_probe(("dns_get_servers",), self._dns_get_servers_uncached)
+
+    def _dns_get_servers_uncached(self) -> dict[str, list[str]]:
+        script = (
+            "$up = Get-NetAdapter -Physical -ErrorAction SilentlyContinue | Where-Object Status -eq 'Up' | "
+            "Select-Object -ExpandProperty InterfaceAlias; $out = @{}; foreach ($a in $up) { "
+            "$s = Get-DnsClientServerAddress -InterfaceAlias $a -AddressFamily IPv4 -ErrorAction SilentlyContinue; "
+            "$static = Get-ItemProperty -Path \"HKLM:\\SYSTEM\\CurrentControlSet\\Services\\Tcpip\\Parameters\\Interfaces\\$((Get-NetAdapter -InterfaceAlias $a).InterfaceGuid)\" -Name NameServer -ErrorAction SilentlyContinue; "
+            "$out[$a] = @(if ($static.NameServer) { $s.ServerAddresses } else { @() }) }; $out | ConvertTo-Json -Compress"
+        )
+        output = self._run_hidden(
+            ["powershell", "-NoProfile", "-Command", script], capture_output=True, text=True, check=False
+        ).stdout.strip()
+        try:
+            payload = json.loads(output) if output else {}
+        except ValueError:
+            return {}
+        if not isinstance(payload, dict):
+            return {}
+        result: dict[str, list[str]] = {}
+        for alias, servers in payload.items():
+            if isinstance(servers, str):
+                servers = [servers]
+            result[str(alias)] = [str(item) for item in (servers or [])]
+        return result
+
+    def dns_set_servers(self, alias: str, servers: list[str] | None) -> None:
+        if servers:
+            listed = ",".join(ps_quote(server) for server in servers)
+            script = f"Set-DnsClientServerAddress -InterfaceAlias {ps_quote(alias)} -ServerAddresses @({listed}) -ErrorAction Stop"
+        else:
+            script = f"Set-DnsClientServerAddress -InterfaceAlias {ps_quote(alias)} -ResetServerAddresses -ErrorAction Stop"
+        result = self._run_hidden(
+            ["powershell", "-NoProfile", "-Command", script], capture_output=True, text=True, check=False
+        )
+        if result.returncode != 0:
+            raise RuntimeError(f"Setting DNS on {alias} failed: {self._tail(result)}")
+        self._run_hidden(["ipconfig", "/flushdns"], capture_output=True, check=False)
+
+    def net_adapter_property_get(self, keyword: str) -> dict[str, str | None]:
+        return self._cached_probe(("net_adapter_property_get", keyword), lambda: self._net_adapter_property_get_uncached(keyword))
+
+    def _net_adapter_property_get_uncached(self, keyword: str) -> dict[str, str | None]:
+        script = (
+            "Get-NetAdapter -Physical -ErrorAction SilentlyContinue | "
+            f"Get-NetAdapterAdvancedProperty -RegistryKeyword {ps_quote(keyword)} -ErrorAction SilentlyContinue | "
+            "ForEach-Object { [pscustomobject]@{ name = $_.Name; value = [string]($_.RegistryValue | Select-Object -First 1) } } | "
+            "ConvertTo-Json -Compress"
+        )
+        output = self._run_hidden(
+            ["powershell", "-NoProfile", "-Command", script], capture_output=True, text=True, check=False
+        ).stdout.strip()
+        try:
+            payload = json.loads(output) if output else []
+        except ValueError:
+            return {}
+        if isinstance(payload, dict):
+            payload = [payload]
+        return {str(item.get("name")): (str(item.get("value")) if item.get("value") not in (None, "") else None) for item in payload}
+
+    def net_adapter_property_set(self, adapter: str, keyword: str, value: str) -> None:
+        script = (
+            f"Set-NetAdapterAdvancedProperty -Name {ps_quote(adapter)} -RegistryKeyword {ps_quote(keyword)} "
+            f"-RegistryValue {ps_quote(value)} -NoRestart:$false -ErrorAction Stop"
+        )
+        result = self._run_hidden(["powershell", "-NoProfile", "-Command", script], capture_output=True, text=True, check=False)
+        if result.returncode != 0:
+            raise RuntimeError(f"Setting {keyword} on {adapter} failed: {self._tail(result)}")
+
+    def bcd_get(self, name: str) -> str | None:
+        return self._cached_probe(("bcd_get", name), lambda: self._bcd_get_uncached(name))
+
+    def _bcd_get_uncached(self, name: str) -> str | None:
+        result = self._run_hidden(["bcdedit", "/enum", "{current}"], capture_output=True, text=True, check=False)
+        if result.returncode != 0:
+            raise RuntimeError("The boot configuration can only be read with administrator rights.")
+        for line in result.stdout.splitlines():
+            parts = line.split(None, 1)
+            if parts and parts[0].lower() == name.lower():
+                return parts[1].strip() if len(parts) > 1 else ""
+        return None
+
+    def bcd_set(self, name: str, value: str | None) -> None:
+        if value is None:
+            if self._bcd_get_uncached(name) is None:
+                return
+            command = ["bcdedit", "/deletevalue", "{current}", name]
+        else:
+            command = ["bcdedit", "/set", "{current}", name, value]
+        result = self._run_hidden(command, capture_output=True, text=True, check=False)
+        if result.returncode != 0:
+            raise RuntimeError(f"{' '.join(command)} failed: {self._tail(result)}")
+
+    def network_latency(self, hosts: list[str]) -> dict[str, float | None]:
+        results: dict[str, float | None] = {}
+        for host in hosts:
+            output = self._run_hidden(
+                ["ping", "-n", "4", "-w", "1000", host], capture_output=True, text=True, check=False
+            ).stdout
+            times = [float(value) for value in re.findall(r"[=<](\d+)ms", output)]
+            results[host] = round(sum(times) / len(times), 1) if times else None
+        return results
+
+    def cleanup_estimate(self, targets: dict[str, list[str]]) -> dict[str, int]:
+        return {
+            target_id: sum(_folder_size(Path(os.path.expandvars(path))) for path in paths)
+            for target_id, paths in targets.items()
         }
-        token = aliases.get(name.lower(), name)
-        self._run_hidden(["powercfg", "/S", token], check=False)
 
     def display_get_current_refresh_rate(self) -> int | None:
         return self._cached_probe(
@@ -934,34 +1429,57 @@ class WindowsPlatformFacade:
         )
 
     def _display_get_highest_refresh_rate_uncached(self) -> int | None:
+        current = self._devmode()
+        if not ctypes.windll.user32.EnumDisplaySettingsW(None, -1, ctypes.byref(current)):
+            return None
         index = 0
         highest = None
         while True:
             devmode = self._devmode()
             if not ctypes.windll.user32.EnumDisplaySettingsW(None, index, ctypes.byref(devmode)):
                 break
-            highest = max(highest or 0, int(devmode.dmDisplayFrequency))
             index += 1
+            # Only modes at the current resolution and colour depth count. The
+            # highest rate overall is often only offered at a lower resolution.
+            if (
+                devmode.dmPelsWidth != current.dmPelsWidth
+                or devmode.dmPelsHeight != current.dmPelsHeight
+                or devmode.dmBitsPerPel != current.dmBitsPerPel
+            ):
+                continue
+            highest = max(highest or 0, int(devmode.dmDisplayFrequency))
         return highest
 
     def display_set_refresh_rate(self, value: int) -> None:
         devmode = self._devmode()
         ENUM_CURRENT_SETTINGS = -1
         DM_DISPLAYFREQUENCY = 0x00400000
+        CDS_UPDATEREGISTRY = 0x00000001
         if not ctypes.windll.user32.EnumDisplaySettingsW(None, ENUM_CURRENT_SETTINGS, ctypes.byref(devmode)):
-            return
+            raise RuntimeError("The current display mode could not be read.")
         devmode.dmFields |= DM_DISPLAYFREQUENCY
         devmode.dmDisplayFrequency = int(value)
-        ctypes.windll.user32.ChangeDisplaySettingsW(ctypes.byref(devmode), 0)
+        # CDS_UPDATEREGISTRY persists the mode; flag 0 reverted it on the next reboot.
+        result = ctypes.windll.user32.ChangeDisplaySettingsW(ctypes.byref(devmode), CDS_UPDATEREGISTRY)
+        if result != 0:
+            raise RuntimeError(f"The display rejected {value}Hz (ChangeDisplaySettings returned {result}).")
 
     def startup_inventory(self) -> dict[str, Any]:
         items_by_id: dict[str, StartupEntry] = {}
-        for path, location, scope in [
-            (r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run", "Run", "user"),
-            (r"HKLM\Software\Microsoft\Windows\CurrentVersion\Run", "Run (Machine)", "machine"),
+        for path, location, scope, approval_path in [
+            (r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run", "Run", "user", None),
+            (r"HKLM\Software\Microsoft\Windows\CurrentVersion\Run", "Run (Machine)", "machine", None),
+            (
+                r"HKLM\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Run",
+                "Run (Machine, 32-bit)",
+                "machine32",
+                r"HKLM\Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run32",
+            ),
         ]:
-            approval_values = self.registry_value_map(self._startup_approved_registry_path(scope))
+            approval_values = self.registry_value_map(approval_path or self._startup_approved_registry_path(scope))
             for name, command in self.registry_value_map(path).items():
+                if not name:
+                    continue
                 status_source = self._startup_status_source(approval_values.get(name))
                 entry = StartupEntry(
                     id=self._startup_registry_id(scope, path, name),
@@ -979,6 +1497,7 @@ class WindowsPlatformFacade:
         for path, location, scope in [
             (r"HKCU\Software\Tweakify\DisabledStartup\Run", "Run", "user"),
             (r"HKLM\Software\Tweakify\DisabledStartup\Run", "Run (Machine)", "machine"),
+            (r"HKLM\Software\Tweakify\DisabledStartup\Run32", "Run (Machine, 32-bit)", "machine32"),
         ]:
             for name, command in self.registry_value_map(path).items():
                 entry = StartupEntry(
@@ -1003,6 +1522,9 @@ class WindowsPlatformFacade:
                 continue
             approval_values = self.registry_value_map(self._startup_approved_folder_path(scope))
             for item in folder.iterdir():
+                # desktop.ini is shell metadata, not something that launches at sign-in.
+                if item.name.lower() == "desktop.ini" or item.is_dir():
+                    continue
                 status_source = self._startup_status_source(approval_values.get(item.name))
                 entry = StartupEntry(
                     id=self._startup_folder_id(scope, str(item)),
@@ -1063,16 +1585,18 @@ class WindowsPlatformFacade:
         active_path = entry.registry_path or self._active_registry_path(entry.scope)
         disabled_path = self._disabled_registry_path(entry.scope)
         if enabled:
-            value = self.registry_get(disabled_path, entry.value_name)
+            value, value_type = self.registry_get_typed(disabled_path, entry.value_name)
             if value is not None:
-                self.registry_set(active_path, entry.value_name, value, "REG_SZ")
+                self.registry_set(active_path, entry.value_name, value, value_type or "REG_SZ")
                 self.registry_delete(disabled_path, entry.value_name)
             self._clear_startup_approved(entry)
             return
-        value = self.registry_get(active_path, entry.value_name)
+        # Keep the original value type. Many Run entries are REG_EXPAND_SZ
+        # (%ProgramFiles%\...), and rewriting them as REG_SZ broke them on re-enable.
+        value, value_type = self.registry_get_typed(active_path, entry.value_name)
         if value is None:
             return
-        self.registry_set(disabled_path, entry.value_name, value, "REG_SZ")
+        self.registry_set(disabled_path, entry.value_name, value, value_type or "REG_SZ")
         self.registry_delete(active_path, entry.value_name)
 
     def _set_startup_folder_entry(self, entry: StartupEntry, enabled: bool) -> None:
@@ -1107,8 +1631,22 @@ class WindowsPlatformFacade:
             encoding="utf-8",
         )
 
-    def run_command(self, command: list[str], description: str = "") -> None:
-        self._run_hidden(command, check=False)
+    def run_command(self, command: list[str], description: str = "", timeout: int | None = 1800) -> int:
+        executable = command[0]
+        if os.path.isabs(executable) and not os.path.exists(executable):
+            raise FileNotFoundError(f"{executable} was not found on this machine.")
+        try:
+            result = self._run_hidden(
+                command,
+                capture_output=True,
+                text=True,
+                errors="replace",
+                check=False,
+                timeout=timeout,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError(f"{Path(executable).name} did not finish within {timeout} seconds.") from exc
+        return result.returncode
 
     def detect_nvidia_inspector(self, base_dir: Path | str | None = None) -> Path | None:
         return self._cached_probe(
@@ -1166,13 +1704,14 @@ class WindowsPlatformFacade:
         }
         try:
             request = urllib.request.Request(api_url, headers=headers)
-            with urllib.request.urlopen(request) as response:
+            with urllib.request.urlopen(request, timeout=DOWNLOAD_TIMEOUT_SECONDS) as response:
                 releases = json.loads(response.read().decode("utf-8"))
             if not isinstance(releases, list):
                 raise ValueError("Unexpected release payload.")
             asset_url = None
             asset_name = ""
-            for release in releases:
+            stable = [release for release in releases if not release.get("prerelease") and not release.get("draft")]
+            for release in stable or releases:
                 assets = release.get("assets", [])
                 for asset in assets:
                     name = str(asset.get("name", ""))
@@ -1185,9 +1724,13 @@ class WindowsPlatformFacade:
             if not asset_url:
                 raise FileNotFoundError("No downloadable archive was found in the release feed.")
 
+            if not str(asset_url).startswith("https://github.com/"):
+                raise ValueError("The release asset is not hosted on github.com; refusing to download it.")
             archive_request = urllib.request.Request(str(asset_url), headers=headers)
-            with urllib.request.urlopen(archive_request) as response:
-                archive_bytes = response.read()
+            with urllib.request.urlopen(archive_request, timeout=DOWNLOAD_TIMEOUT_SECONDS) as response:
+                archive_bytes = response.read(MAX_DOWNLOAD_BYTES + 1)
+            if len(archive_bytes) > MAX_DOWNLOAD_BYTES:
+                raise ValueError("The release archive is larger than expected; refusing to extract it.")
 
             if self.profile_inspector_dir.exists():
                 shutil.rmtree(self.profile_inspector_dir)
@@ -1252,25 +1795,69 @@ class WindowsPlatformFacade:
         exe = self.detect_nvidia_inspector()
         if not exe:
             raise FileNotFoundError("nvidiaInspector.exe is unavailable")
-        subprocess.run([str(exe), *args], check=False)
+        self._run_hidden([str(exe), *args], check=False, timeout=60)
+
+    def nvidia_profile_apply(self, settings: dict[int, int]) -> None:
+        """Import DWORD settings into the driver's Base (global) profile."""
+        exe = self.detect_nvidia_profile_inspector_known_locations()
+        if not exe:
+            raise FileNotFoundError("nvidiaProfileInspector.exe is unavailable")
+        rows = "".join(
+            "<ProfileSetting><SettingNameInfo> </SettingNameInfo>"
+            f"<SettingID>{int(setting_id)}</SettingID><SettingValue>{int(value)}</SettingValue>"
+            "<ValueType>Dword</ValueType></ProfileSetting>"
+            for setting_id, value in settings.items()
+        )
+        document = (
+            '<?xml version="1.0" encoding="utf-16"?>\r\n<ArrayOfProfile><Profile>'
+            "<ProfileName>Base Profile</ProfileName><Executeables /><Settings>"
+            f"{rows}</Settings></Profile></ArrayOfProfile>"
+        )
+        cache_dir = self.tweakify_root / "cache"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        nip_path = cache_dir / "tweakify-nvidia.nip"
+        nip_path.write_text(document, encoding="utf-16")
+        try:
+            result = self._run_hidden([str(exe), str(nip_path), "-silent"], check=False, timeout=60)
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError("NVIDIA Profile Inspector did not finish the import within 60 seconds.") from exc
+        if result.returncode != 0:
+            raise RuntimeError(f"NVIDIA Profile Inspector import failed with code {result.returncode}.")
 
     def create_restore_point(self, description: str) -> bool:
         system_drive = os.environ.get("SystemDrive", "C:")
+        # Windows silently skips a restore point if another was created in the
+        # last 24 hours. Lift that limit for this call, then put it back.
         command = (
-            "Enable-ComputerRestore -Drive "
-            f"'{system_drive}'; "
-            f"Checkpoint-Computer -Description '{description}' -RestorePointType 'MODIFY_SETTINGS'"
+            "$ErrorActionPreference = 'Stop'; "
+            "$key = 'HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\SystemRestore'; "
+            "$old = (Get-ItemProperty -Path $key -Name SystemRestorePointCreationFrequency -ErrorAction SilentlyContinue).SystemRestorePointCreationFrequency; "
+            "Set-ItemProperty -Path $key -Name SystemRestorePointCreationFrequency -Value 0 -Type DWord; "
+            "try { "
+            f"Enable-ComputerRestore -Drive {ps_quote(system_drive + chr(92))}; "
+            "$before = @(Get-ComputerRestorePoint -ErrorAction SilentlyContinue).Count; "
+            f"Checkpoint-Computer -Description {ps_quote(description[:255])} -RestorePointType 'MODIFY_SETTINGS'; "
+            "$after = @(Get-ComputerRestorePoint -ErrorAction SilentlyContinue).Count; "
+            "if ($after -le $before) { exit 3 } "
+            "} finally { "
+            "if ($null -eq $old) { Remove-ItemProperty -Path $key -Name SystemRestorePointCreationFrequency -ErrorAction SilentlyContinue } "
+            "else { Set-ItemProperty -Path $key -Name SystemRestorePointCreationFrequency -Value $old -Type DWord } }"
         )
-        result = self._run_hidden(
-            ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
+        try:
+            result = self._run_hidden(
+                ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=600,
+            )
+        except subprocess.TimeoutExpired:
+            return False
         return result.returncode == 0
 
     def open_task_manager(self) -> None:
-        subprocess.run(["taskmgr.exe"], check=False)
+        # Popen, not run: run() blocked the GUI thread until Task Manager closed.
+        subprocess.Popen(["taskmgr.exe"])
 
     def open_external_url(self, url: str) -> None:
         try:
@@ -1353,11 +1940,21 @@ class WindowsPlatformFacade:
         return f"{status.dwMemoryLoad}%"
 
     def system_drive_type(self) -> str:
+        return self._cached_probe(("system_drive_type",), self._system_drive_type_uncached)
+
+    def _system_drive_type_uncached(self) -> str:
         drive = os.environ.get("SystemDrive", "C:")
         drive_type = ctypes.windll.kernel32.GetDriveTypeW(f"{drive}\\")
+        if drive_type == 3:
+            letter = drive.rstrip(":\\")[:1] or "C"
+            media = self._read_cim_property(
+                f"(Get-Partition -DriveLetter {letter} -ErrorAction SilentlyContinue | Get-Disk | Get-PhysicalDisk).MediaType"
+            )
+            if media and media.strip().upper() in {"SSD", "HDD", "SCM"}:
+                return media.strip().upper()
+            return "Fixed"
         return {
             2: "Removable",
-            3: "SSD/HDD",
             4: "Network",
             5: "CD-ROM",
             6: "RAM Disk",
@@ -1396,25 +1993,22 @@ class WindowsPlatformFacade:
         return output or None
 
     def _active_registry_path(self, scope: str) -> str:
-        return (
-            r"HKLM\Software\Microsoft\Windows\CurrentVersion\Run"
-            if scope == "machine"
-            else r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run"
-        )
+        return {
+            "machine": r"HKLM\Software\Microsoft\Windows\CurrentVersion\Run",
+            "machine32": r"HKLM\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Run",
+        }.get(scope, r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run")
 
     def _disabled_registry_path(self, scope: str) -> str:
-        return (
-            r"HKLM\Software\Tweakify\DisabledStartup\Run"
-            if scope == "machine"
-            else r"HKCU\Software\Tweakify\DisabledStartup\Run"
-        )
+        return {
+            "machine": r"HKLM\Software\Tweakify\DisabledStartup\Run",
+            "machine32": r"HKLM\Software\Tweakify\DisabledStartup\Run32",
+        }.get(scope, r"HKCU\Software\Tweakify\DisabledStartup\Run")
 
     def _startup_approved_registry_path(self, scope: str) -> str:
-        return (
-            r"HKLM\Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run"
-            if scope == "machine"
-            else r"HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run"
-        )
+        return {
+            "machine": r"HKLM\Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run",
+            "machine32": r"HKLM\Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run32",
+        }.get(scope, r"HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run")
 
     def _startup_approved_folder_path(self, scope: str) -> str:
         return (

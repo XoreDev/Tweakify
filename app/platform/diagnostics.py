@@ -5,6 +5,29 @@ from datetime import UTC, datetime
 from app.domain.models import DiagnosticItem, DiagnosticsSnapshot
 
 
+def _percent(value: object) -> float | None:
+    try:
+        return float(str(value).strip().rstrip("%"))
+    except ValueError:
+        return None
+
+
+def _threshold_status(value: float | None, warning: float, critical: float, higher_is_worse: bool = True) -> str:
+    if value is None:
+        return "info"
+    if higher_is_worse:
+        if value >= critical:
+            return "critical"
+        if value >= warning:
+            return "warning"
+        return "ok"
+    if value <= critical:
+        return "critical"
+    if value <= warning:
+        return "warning"
+    return "ok"
+
+
 class DiagnosticsCollector:
     def __init__(self, platform) -> None:
         self.platform = platform
@@ -32,20 +55,20 @@ class DiagnosticsCollector:
                 title="Top CPU Users",
                 value=", ".join(data["top_idle_cpu_users"]),
                 status="info",
-                detail="Current process sample.",
+                detail="Processes with the most CPU time since they started.",
             ),
             DiagnosticItem(
                 id="ram_pressure",
                 title="RAM Pressure",
                 value=data["ram_pressure"],
-                status="ok",
-                detail="Estimated memory pressure snapshot.",
+                status=_threshold_status(_percent(data["ram_pressure"]), warning=70, critical=85),
+                detail="Share of physical memory in use right now.",
             ),
             DiagnosticItem(
                 id="disk_free",
                 title="Disk Free",
                 value=data["disk_free_percent"],
-                status="ok",
+                status=_threshold_status(_percent(data["disk_free_percent"]), warning=20, critical=10, higher_is_worse=False),
                 detail=f"{data['drive_type']} system drive free space.",
             ),
             DiagnosticItem(
@@ -60,30 +83,51 @@ class DiagnosticsCollector:
                 title="VBS",
                 value=data["vbs_status"],
                 status="info",
-                detail="Virtualization-based security state.",
+                detail="Virtualization-based security policy. It protects the kernel but can cost some gaming FPS.",
             ),
             DiagnosticItem(
                 id="memory_integrity",
                 title="Memory Integrity",
                 value=data["memory_integrity"],
                 status="info",
-                detail="Kernel memory integrity state.",
+                detail="Kernel memory integrity (HVCI) policy.",
             ),
             DiagnosticItem(
                 id="indexing",
                 title="Indexing",
                 value=data["indexing_state"],
                 status="info",
-                detail="Windows Search service state.",
+                detail="Windows Search service start mode.",
             ),
             DiagnosticItem(
                 id="delivery_optimization",
                 title="Delivery Optimization",
                 value=data["delivery_optimization"],
                 status="info",
-                detail="Delivery Optimization service state.",
+                detail="Delivery Optimization service start mode.",
             ),
         ]
+        if data.get("uptime_hours") is not None:
+            hours = float(data["uptime_hours"])
+            items.append(
+                DiagnosticItem(
+                    id="uptime",
+                    title="Uptime",
+                    value=f"{hours:.0f} h",
+                    status="warning" if hours >= 7 * 24 else "ok",
+                    detail="Time since the last full restart. Fast Startup shutdowns do not reset it.",
+                )
+            )
+        if data.get("power_plan"):
+            items.append(
+                DiagnosticItem(
+                    id="power_plan",
+                    title="Power Plan",
+                    value=str(data["power_plan"]),
+                    status="info",
+                    detail="Active Windows power scheme.",
+                )
+            )
         return DiagnosticsSnapshot(
             captured_at=datetime.now(UTC).isoformat(),
             items=items,

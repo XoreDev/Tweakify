@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field, is_dataclass
+from dataclasses import asdict, dataclass, field, fields, is_dataclass
 from enum import Enum
 from typing import Any
 
@@ -34,6 +34,16 @@ class VerificationStatus(str, Enum):
     PENDING_LOGOFF = "pending_logoff"
     PENDING_EXPLORER = "pending_explorer_restart"
     NOT_VERIFIED = "not_verified"
+
+
+def _known_fields(cls, payload: dict[str, Any]) -> dict[str, Any]:
+    """Drop keys a dataclass does not declare.
+
+    Settings and snapshot files outlive the code that wrote them. A key added or
+    removed between versions must not stop the app from starting.
+    """
+    allowed = {item.name for item in fields(cls)}
+    return {key: value for key, value in payload.items() if key in allowed}
 
 
 def _json_ready(value: Any) -> Any:
@@ -71,6 +81,8 @@ class ActionDefinition:
     user_scope_only: bool = False
     verification_policy: str = "state_probe"
     visibility_policy: str = "default"
+    conflicts_with: tuple[str, ...] = ()
+    requires_gpu_vendor: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return _json_ready(self)
@@ -118,7 +130,7 @@ class SnapshotEntry:
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "SnapshotEntry":
-        return cls(**payload)
+        return cls(**_known_fields(cls, payload))
 
 
 @dataclass(slots=True)
@@ -247,6 +259,11 @@ class ApplyTransaction:
     results: list[ActionResult]
     snapshot_id: str | None = None
     requested_elevation: bool = False
+    notes: list[str] = field(default_factory=list)
+
+    @property
+    def failed_results(self) -> list["ActionResult"]:
+        return [result for result in self.results if not result.success]
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -257,6 +274,7 @@ class ApplyTransaction:
             "results": [result.to_dict() for result in self.results],
             "snapshot_id": self.snapshot_id,
             "requested_elevation": self.requested_elevation,
+            "notes": list(self.notes),
         }
 
     @classmethod
@@ -269,6 +287,7 @@ class ApplyTransaction:
             results=[ActionResult.from_dict(item) for item in payload["results"]],
             snapshot_id=payload.get("snapshot_id"),
             requested_elevation=payload.get("requested_elevation", False),
+            notes=list(payload.get("notes", [])),
         )
 
 
@@ -311,7 +330,7 @@ class DiagnosticsSnapshot:
     def from_dict(cls, payload: dict[str, Any]) -> "DiagnosticsSnapshot":
         return cls(
             captured_at=payload["captured_at"],
-            items=[DiagnosticItem(**item) for item in payload["items"]],
+            items=[DiagnosticItem(**_known_fields(DiagnosticItem, item)) for item in payload["items"]],
         )
 
 
@@ -337,7 +356,7 @@ class StartupEntry:
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "StartupEntry":
-        return cls(**payload)
+        return cls(**_known_fields(cls, payload))
 
 
 @dataclass(slots=True)
@@ -362,13 +381,22 @@ class AppSettings:
     show_advanced: bool = True
     show_experimental: bool = False
     strict_confirmation: bool = True
+    game_executables: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return _json_ready(self)
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "AppSettings":
-        return cls(**payload)
+        defaults = cls()
+        values = _known_fields(cls, payload)
+        for key, value in list(values.items()):
+            expected = type(getattr(defaults, key))
+            if expected is float and isinstance(value, int) and not isinstance(value, bool):
+                values[key] = float(value)
+            elif not isinstance(value, expected):
+                values.pop(key)
+        return cls(**values)
 
 
 @dataclass(slots=True)
@@ -380,6 +408,9 @@ class MachineContext:
     is_admin: bool
     nvidia_inspector_path: str | None
     bluetooth_devices: int
+    nvidia_profile_inspector_path: str | None = None
+    gpu_vendors: tuple[str, ...] = ()
+    is_laptop: bool = False
 
 
 @dataclass(slots=True)

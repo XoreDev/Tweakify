@@ -81,7 +81,8 @@ def test_gui_launcher_help_executes_from_repo_root():
     )
 
     assert result.returncode == 0
-    assert "Tweakify GUI rewrite" in result.stdout
+    assert "staged Windows tuning" in result.stdout
+    assert "--run-actions" in result.stdout
 
 
 def test_console_launcher_help_executes_from_repo_root():
@@ -94,7 +95,7 @@ def test_console_launcher_help_executes_from_repo_root():
     )
 
     assert result.returncode == 0
-    assert "Tweakify GUI rewrite" in result.stdout
+    assert "staged Windows tuning" in result.stdout
 
 
 def test_gui_launch_routes_through_shared_interactive_session(monkeypatch, qapp):

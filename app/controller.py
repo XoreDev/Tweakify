@@ -8,8 +8,11 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from app.actions.catalog import build_action_catalog
+from app.actions.game_profiles import GAME_PRIORITY_ACTION_ID, build_game_priority_action, parse_game_executables
 from app.domain.compatibility import CompatibilityService
+from app.domain.health import CLEANUP_TARGETS, HealthReport, build_health_report
 from app.domain.models import (
+    ActionResult,
     ActionProbeResult,
     ActionKind,
     ActionPlan,
@@ -40,7 +43,9 @@ MODULES = [
     ("presets", "Presets"),
     ("startup", "Startup"),
     ("performance", "Performance"),
+    ("gaming", "Gaming"),
     ("network", "Network"),
+    ("privacy", "Privacy"),
     ("services", "Services"),
     ("cleanup", "Cleanup"),
     ("input_ui", "Input + UI"),
@@ -70,11 +75,14 @@ class TweakifyController:
         self.platform.set_dependency_path("nvidiaProfileInspector.exe", self.settings.nvidia_profile_inspector_path or None)
         self.elevation = ElevationManager(self.store.plans_dir)
         self.actions = build_action_catalog(platform)
+        self.actions.append(build_game_priority_action(platform, self.settings.game_executables))
         self.actions_by_id = {action.definition.id: action for action in self.actions}
         self.compatibility = CompatibilityService()
         self.diagnostics_collector = DiagnosticsCollector(platform)
         self.staged_targets: dict[str, bool] = {}
         self.staged_startup_entries: dict[str, bool] = {}
+        self.cleanup_sizes: dict[str, int] = {}
+        self.last_stage_notice = ""
         self.machine_context = (
             self.platform.bootstrap_machine_context()
             if self.runtime_pending
@@ -136,7 +144,42 @@ class TweakifyController:
             self.platform.set_dependency_path("nvidiaInspector.exe", value or None)
         if name == "nvidia_profile_inspector_path":
             self.platform.set_dependency_path("nvidiaProfileInspector.exe", value or None)
+        if name == "game_executables":
+            self._rebuild_game_priority_action()
         return self.settings
+
+    def _rebuild_game_priority_action(self) -> None:
+        action = build_game_priority_action(self.platform, self.settings.game_executables)
+        index = next(i for i, item in enumerate(self.actions) if item.definition.id == GAME_PRIORITY_ACTION_ID)
+        self.actions[index] = action
+        self.actions_by_id[GAME_PRIORITY_ACTION_ID] = action
+        self.staged_targets.pop(GAME_PRIORITY_ACTION_ID, None)
+        if not self.runtime_pending:
+            self.action_states[GAME_PRIORITY_ACTION_ID] = action.probe()
+            self.compatibility_by_action[GAME_PRIORITY_ACTION_ID] = self._evaluate(self.machine_context, action)
+
+    def _evaluate(self, machine_context, action) -> CompatibilityDecision:
+        decision = self.compatibility.evaluate(machine_context, action.definition)
+        if action.definition.id == GAME_PRIORITY_ACTION_ID and not parse_game_executables(self.settings.game_executables):
+            decision = CompatibilityDecision(
+                allowed=False,
+                reasons=["Add your game executables under Settings > Games first."] + decision.reasons,
+                warnings=decision.warnings,
+            )
+        return decision
+
+    def stage_disable_all_startup(self) -> int:
+        """Stage every enabled startup entry Off, the 'disable all startup apps' button tweak packs offer."""
+        count = 0
+        for entry in self.startup_inventory.get("items", []):
+            if entry.enabled and entry.id not in self.staged_startup_entries:
+                self.stage_startup_entry(entry.id, False)
+                count += 1
+        return count
+
+    def run_latency_test(self) -> dict[str, float | None]:
+        tester = getattr(self.platform, "network_latency", None)
+        return dict(tester(["1.1.1.1", "8.8.8.8", "9.9.9.9"])) if tester else {}
 
     def refresh_appearance_only(self) -> AppSettings:
         return self.settings
@@ -171,6 +214,10 @@ class TweakifyController:
             self.settings.nvidia_profile_inspector_path = resolved_profile
             self.store.save_settings(self.settings)
         self.platform.set_dependency_path("nvidiaProfileInspector.exe", resolved_profile or None)
+        self.machine_context = replace(
+            self.machine_context,
+            nvidia_profile_inspector_path=resolved_profile or None,
+        )
         self.compatibility_by_action = (
             self._loading_compatibility() if self.runtime_pending else self._evaluate_actions()
         )
@@ -202,16 +249,27 @@ class TweakifyController:
             else:
                 diagnostics = self.store.load_diagnostics() or self.diagnostics
             compatibility = {
-                action.definition.id: self.compatibility.evaluate(machine_context, action.definition)
+                action.definition.id: self._evaluate(machine_context, action)
                 for action in self.actions
             }
+            cleanup_sizes = self._scan_cleanup_sizes()
         return {
             "machine_context": machine_context,
             "action_states": action_states,
             "startup_inventory": startup_inventory,
             "diagnostics": diagnostics,
             "compatibility_by_action": compatibility,
+            "cleanup_sizes": cleanup_sizes,
         }
+
+    def _scan_cleanup_sizes(self) -> dict[str, int]:
+        estimator = getattr(self.platform, "cleanup_estimate", None)
+        if estimator is None:
+            return {}
+        try:
+            return dict(estimator({key: list(value["paths"]) for key, value in CLEANUP_TARGETS.items()}))
+        except Exception:
+            return {}
 
     def apply_runtime_snapshot(self, snapshot: dict[str, object]):
         self.machine_context = snapshot["machine_context"]  # type: ignore[assignment]
@@ -223,6 +281,7 @@ class TweakifyController:
         }
         self.diagnostics = snapshot["diagnostics"]  # type: ignore[assignment]
         self.compatibility_by_action = snapshot["compatibility_by_action"]  # type: ignore[assignment]
+        self.cleanup_sizes = dict(snapshot.get("cleanup_sizes") or {})  # type: ignore[arg-type]
         self.runtime_pending = False
         self.store.save_diagnostics(self.diagnostics)
         self.refresh_presets()
@@ -230,7 +289,7 @@ class TweakifyController:
 
     def _evaluate_actions(self):
         return {
-            action.definition.id: self.compatibility.evaluate(self.machine_context, action.definition)
+            action.definition.id: self._evaluate(self.machine_context, action)
             for action in self.actions
         }
 
@@ -281,6 +340,7 @@ class TweakifyController:
         if self.runtime_pending:
             return
         action = self.actions_by_id[action_id]
+        self.last_stage_notice = ""
         if action.definition.kind == ActionKind.MAINTENANCE and not target_state:
             self.staged_targets.pop(action_id, None)
             return
@@ -291,6 +351,97 @@ class TweakifyController:
             self.staged_targets.pop(action_id, None)
             return
         self.staged_targets[action_id] = target_state
+        if target_state:
+            self._unstage_conflicts(action_id)
+
+    def _unstage_conflicts(self, action_id: str) -> None:
+        """Two actions that write the same setting cannot both be On in one plan."""
+        definition = self.actions_by_id[action_id].definition
+        conflicting = set(definition.conflicts_with)
+        conflicting.update(
+            other.definition.id for other in self.actions if action_id in other.definition.conflicts_with
+        )
+        removed = [
+            self.actions_by_id[other_id].definition.title
+            for other_id in sorted(conflicting)
+            if self.staged_targets.get(other_id) is True and self.staged_targets.pop(other_id, None) is not None
+        ]
+        if removed:
+            self.last_stage_notice = f"{definition.title} replaces {', '.join(removed)} in this plan."
+
+    def stage_action_ids(self, action_ids: list[str]) -> list[str]:
+        """Stage actions On by id. Returns the ids that do not exist."""
+        unknown = []
+        for action_id in action_ids:
+            if action_id not in self.actions_by_id:
+                unknown.append(action_id)
+                continue
+            if self.compatibility_by_action.get(action_id, CompatibilityDecision(allowed=True)).allowed:
+                self.stage_action(action_id, True)
+        return unknown
+
+    def stage_plan_payload(self, payload: dict) -> list[str]:
+        """Stage an exported plan. Returns titles of entries that could not be staged."""
+        skipped: list[str] = []
+        for change in payload.get("changes", []):
+            action_id = change.get("action_id")
+            if action_id not in self.actions_by_id:
+                skipped.append(str(change.get("title") or action_id))
+                continue
+            decision = self.compatibility_by_action.get(action_id)
+            if decision is not None and not decision.allowed:
+                skipped.append(self.actions_by_id[action_id].definition.title)
+                continue
+            self.stage_action(action_id, bool(change.get("target_state")))
+        for change in payload.get("startup_changes", []):
+            entry_id = change.get("entry_id")
+            if entry_id not in self.startup_inventory_by_id:
+                skipped.append(str(change.get("name") or entry_id))
+                continue
+            self.stage_startup_entry(entry_id, bool(change.get("target_enabled")))
+        return skipped
+
+    def export_staged_plan(self, path: Path | str) -> Path:
+        target = Path(path)
+        payload = self.build_plan().to_dict()
+        payload["format"] = "tweakify-plan/1"
+        target.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        return target
+
+    def import_plan(self, path: Path | str) -> list[str]:
+        payload = json.loads(Path(path).read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            raise ValueError("This file is not a Tweakify plan.")
+        return self.stage_plan_payload(payload)
+
+    def health_report(self) -> HealthReport:
+        return build_health_report(self)
+
+    def recommended_fix_ids(self) -> list[str]:
+        """Safe, compatible, not-yet-applied actions the health findings point at."""
+        if self.runtime_pending:
+            return []
+        ids: list[str] = []
+        for finding in self.health_report().findings:
+            for action_id in finding.action_ids:
+                action = self.actions_by_id.get(action_id)
+                if action is None or action_id in ids or action_id in self.staged_targets:
+                    continue
+                if action.definition.safety_tier != SafetyTier.SAFE:
+                    continue
+                decision = self.compatibility_by_action.get(action_id)
+                if decision is None or not decision.allowed:
+                    continue
+                if action.definition.kind == ActionKind.SETTING and self.current_state(action_id):
+                    continue
+                ids.append(action_id)
+        return ids
+
+    def stage_recommended_fixes(self) -> int:
+        ids = self.recommended_fix_ids()
+        for action_id in ids:
+            self.stage_action(action_id, True)
+        return len(ids)
 
     def stage_startup_entry(self, entry_id: str, target_enabled: bool) -> None:
         if self.runtime_pending:
@@ -499,52 +650,118 @@ class TweakifyController:
     def apply_staged(self) -> ApplyTransaction:
         plan = self.build_plan()
         transaction_id = f"apply-{uuid.uuid4().hex[:12]}"
+        action_ids = [change.action_id for change in plan.changes] + [change.entry_id for change in plan.startup_changes]
         if plan.requires_elevation:
-            self.elevation.write_plan_file(plan.to_dict())
+            plan_path = self.elevation.write_plan_file(plan.to_dict())
+            notes = []
+            if getattr(self.platform, "supports_elevated_helper", False):
+                try:
+                    self.elevation.launch_elevated(self.elevation.build_apply_command(plan_path))
+                    notes.append("Machine-scope changes were handed to the elevated helper. Approve the UAC prompt to apply them.")
+                except Exception as exc:
+                    notes.append(f"The elevated helper could not start: {exc}")
+            else:
+                notes.append(f"Machine-scope changes were saved to {plan_path} for the elevated helper.")
             transaction = ApplyTransaction(
                 transaction_id=transaction_id,
                 created_at=datetime.now(UTC).isoformat(),
                 dry_run=False,
-                action_ids=[change.action_id for change in plan.changes] + [change.entry_id for change in plan.startup_changes],
+                action_ids=action_ids,
                 results=[],
                 requested_elevation=True,
+                notes=notes,
             )
             self.store.save_transaction(transaction)
             self.clear_staging()
             self.refresh_presets()
             return transaction
 
+        notes: list[str] = []
         if self.settings.auto_restore_point_advanced and any(
             self.actions_by_id[change.action_id].definition.safety_tier != SafetyTier.SAFE
             for change in plan.changes
         ):
-            self.platform.create_restore_point("Tweakify Advanced Apply")
+            try:
+                created = self.platform.create_restore_point("Tweakify Advanced Apply")
+            except Exception:
+                created = False
+            notes.append(
+                "Windows restore point created before applying Advanced changes."
+                if created
+                else "Windows could not create a restore point (System Protection may be off). "
+                "Tweakify's own snapshot still records every change for rollback."
+            )
 
         writer = self.platform.snapshot_writer()
-        results = []
-        for change in plan.changes:
-            action = self.actions_by_id[change.action_id]
-            results.append(action.apply(change.target_state, writer))
-        for change in plan.startup_changes:
-            current_enabled = self.current_startup_entry_enabled(change.entry_id)
-            snapshot_entry = writer.capture(
-                action_id=change.entry_id,
-                target_state=change.target_enabled,
-                before_state=self._startup_snapshot_state(change.entry_id, change.name, current_enabled),
-                after_state=self._startup_snapshot_state(change.entry_id, change.name, change.target_enabled),
-                reversible=True,
-                notes=f"Startup entry::{change.name}",
-            )
-            self.platform.startup_entry_set_enabled(change.entry_id, change.target_enabled)
-            results.append(
-                self._startup_entry_result(
-                    change.entry_id,
-                    change.name,
-                    change.target_enabled,
-                    snapshot_entry,
+        results: list[ActionResult] = []
+        # One failing action must not stop the rest, and must never lose the
+        # snapshot of the actions that already ran.
+        try:
+            for change in plan.changes:
+                action = self.actions_by_id[change.action_id]
+                try:
+                    results.append(action.apply(change.target_state, writer))
+                except Exception as exc:  # pragma: no cover - BaseAction.apply already isolates failures
+                    results.append(
+                        ActionResult(
+                            action_id=change.action_id,
+                            success=False,
+                            message=f"{action.definition.title} failed: {exc}",
+                            failure_reason=str(exc),
+                        )
+                    )
+            for change in plan.startup_changes:
+                current_enabled = self.current_startup_entry_enabled(change.entry_id)
+                try:
+                    self.platform.startup_entry_set_enabled(change.entry_id, change.target_enabled)
+                except Exception as exc:
+                    results.append(
+                        ActionResult(
+                            action_id=change.entry_id,
+                            success=False,
+                            message=f"Startup entry {change.name} could not be changed: {exc}",
+                            failure_reason=str(exc),
+                        )
+                    )
+                    continue
+                snapshot_entry = writer.capture(
+                    action_id=change.entry_id,
+                    target_state=change.target_enabled,
+                    before_state=self._startup_snapshot_state(change.entry_id, change.name, current_enabled),
+                    after_state=self._startup_snapshot_state(change.entry_id, change.name, change.target_enabled),
+                    reversible=True,
+                    notes=f"Startup entry::{change.name}",
                 )
-            )
+                results.append(
+                    self._startup_entry_result(
+                        change.entry_id,
+                        change.name,
+                        change.target_enabled,
+                        snapshot_entry,
+                    )
+                )
+        finally:
+            snapshot_id = self._save_apply_snapshot(writer)
 
+        transaction = ApplyTransaction(
+            transaction_id=transaction_id,
+            created_at=datetime.now(UTC).isoformat(),
+            dry_run=False,
+            action_ids=action_ids,
+            results=results,
+            snapshot_id=snapshot_id,
+            notes=notes,
+        )
+        self.store.save_transaction(transaction)
+        self.clear_staging()
+        self.refresh_machine_context()
+        self.refresh_action_states()
+        self.refresh_startup_inventory()
+        self.refresh_diagnostics()
+        self.refresh_presets()
+        return transaction
+
+    def _save_apply_snapshot(self, writer) -> str | None:
         snapshot_id = None
         if writer.entries:
             snapshot_id = f"snap-{uuid.uuid4().hex[:12]}"
@@ -557,23 +774,7 @@ class TweakifyController:
                 action_entries=writer.entries,
             )
             self.store.save_snapshot(manifest)
-
-        transaction = ApplyTransaction(
-            transaction_id=transaction_id,
-            created_at=datetime.now(UTC).isoformat(),
-            dry_run=False,
-            action_ids=[change.action_id for change in plan.changes] + [change.entry_id for change in plan.startup_changes],
-            results=results,
-            snapshot_id=snapshot_id,
-        )
-        self.store.save_transaction(transaction)
-        self.clear_staging()
-        self.refresh_machine_context()
-        self.refresh_action_states()
-        self.refresh_startup_inventory()
-        self.refresh_diagnostics()
-        self.refresh_presets()
-        return transaction
+        return snapshot_id
 
     def rollback_snapshot(self, snapshot_id: str) -> ApplyTransaction:
         snapshot = self.store.load_snapshot(snapshot_id)
@@ -587,14 +788,32 @@ class TweakifyController:
             )
 
         results = []
-        for entry in snapshot.action_entries:
-            if self._is_startup_snapshot(entry):
-                results.append(self._rollback_startup_snapshot(entry))
-                continue
-            action = self.actions_by_id.get(entry.action_id)
-            if action is None:
-                continue
-            results.append(action.rollback(entry))
+        # Undo newest-first, the reverse of the order the changes were applied.
+        for entry in reversed(snapshot.action_entries):
+            try:
+                if self._is_startup_snapshot(entry):
+                    results.append(self._rollback_startup_snapshot(entry))
+                    continue
+                action = self.actions_by_id.get(entry.action_id)
+                if action is None:
+                    results.append(
+                        ActionResult(
+                            action_id=entry.action_id,
+                            success=False,
+                            message=f"{entry.action_id} is not part of this Tweakify version and was skipped.",
+                        )
+                    )
+                    continue
+                results.append(action.rollback(entry))
+            except Exception as exc:
+                results.append(
+                    ActionResult(
+                        action_id=entry.action_id,
+                        success=False,
+                        message=f"Rollback of {entry.action_id} failed: {exc}",
+                        failure_reason=str(exc),
+                    )
+                )
 
         transaction = ApplyTransaction(
             transaction_id=f"rollback-{uuid.uuid4().hex[:12]}",
@@ -634,11 +853,15 @@ class TweakifyController:
         for action in self.actions:
             if action.definition.kind != ActionKind.SETTING:
                 continue
-            before_state = action.capture_state()
+            try:
+                before_state = action.capture_state()
+                enabled = action.is_enabled()
+            except Exception:
+                continue
             entries.append(
                 SnapshotEntry(
                     action_id=action.definition.id,
-                    target_state=bool(action.is_enabled()),
+                    target_state=bool(enabled),
                     before_state=before_state,
                     after_state=before_state,
                     reversible=True,
@@ -657,7 +880,10 @@ class TweakifyController:
         return manifest
 
     def create_restore_point(self) -> bool:
-        return self.platform.create_restore_point("Tweakify Restore Point")
+        try:
+            return bool(self.platform.create_restore_point("Tweakify Restore Point"))
+        except Exception:
+            return False
 
     def open_task_manager(self) -> None:
         self.platform.open_task_manager()
@@ -669,8 +895,6 @@ class TweakifyController:
         return {entry.action_id: entry.target_state for entry in baseline.action_entries}
 
     def _startup_entry_result(self, entry_id: str, name: str, target_enabled: bool, snapshot_entry=None):
-        from app.domain.models import ActionResult
-
         state_copy = "Enabled" if target_enabled else "Disabled"
         return ActionResult(
             action_id=entry_id,

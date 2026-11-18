@@ -57,7 +57,6 @@ def build_presets(actions, baseline_targets: dict[str, bool] | None = None) -> l
                     "check_disk_errors",
                     "remove_shortcut_text",
                     "disable_enhance_pointer_precision",
-                    "adjust_mouse_trails",
                     "optimize_mouse_double_click",
                     "optimize_key_repeat_delay",
                     "disable_recent_files",
@@ -68,7 +67,10 @@ def build_presets(actions, baseline_targets: dict[str, bool] | None = None) -> l
                     "improve_menu_speed",
                     "disable_game_dvr",
                     "set_highest_refresh_rate",
-                ]
+                                    "disable_game_bar_tips",
+                    "disable_sticky_keys_shortcut",
+                    "enable_windowed_game_optimizations",
+]
             ),
         ),
         PresetDefinition(
@@ -91,7 +93,6 @@ def build_presets(actions, baseline_targets: dict[str, bool] | None = None) -> l
                     "disable_background_apps",
                     "disable_notifications",
                     "disable_enhance_pointer_precision",
-                    "adjust_mouse_trails",
                     "optimize_mouse_double_click",
                     "optimize_key_repeat_delay",
                     "disable_recent_files",
@@ -102,7 +103,9 @@ def build_presets(actions, baseline_targets: dict[str, bool] | None = None) -> l
                     "improve_menu_speed",
                     "disable_game_dvr",
                     "set_highest_refresh_rate",
-                ]
+                                    "disable_game_bar_tips",
+                    "disable_sticky_keys_shortcut",
+]
             ),
         ),
         PresetDefinition(
@@ -139,7 +142,10 @@ def build_presets(actions, baseline_targets: dict[str, bool] | None = None) -> l
                     "disable_balloon_tips",
                     "improve_menu_speed",
                     "disable_game_dvr",
-                ]
+                                    "disable_start_menu_suggestions",
+                    "disable_advertising_id",
+                    "set_rarely_used_services_manual",
+]
             ),
         ),
         PresetDefinition(
@@ -164,18 +170,24 @@ def build_presets(actions, baseline_targets: dict[str, bool] | None = None) -> l
                     "disk_cleanup",
                     "clear_temp_files",
                     "remove_shortcut_text",
-                    "disable_enhance_pointer_precision",
-                    "adjust_mouse_trails",
-                    "optimize_mouse_double_click",
-                    "optimize_key_repeat_delay",
                     "disable_recent_files",
                     "disable_widgets",
-                    "disable_animations",
                     "disable_aero_peak",
                     "disable_balloon_tips",
-                    "improve_menu_speed",
                     "disable_game_dvr",
-                ]
+                                    "disable_advertising_id",
+                    "disable_tailored_experiences",
+                    "disable_start_menu_suggestions",
+                    "disable_lock_screen_tips",
+                    "disable_web_search_in_start",
+                    "disable_activity_history",
+                    "disable_app_launch_tracking",
+                    "disable_feedback_requests",
+                    "disable_input_personalization",
+                    "disable_copilot",
+                    "disable_recall",
+                    "disable_office_telemetry",
+]
             ),
         ),
         PresetDefinition(
@@ -209,7 +221,12 @@ def build_presets(actions, baseline_targets: dict[str, bool] | None = None) -> l
                     "disable_balloon_tips",
                     "improve_menu_speed",
                     "disable_game_dvr",
-                ]
+                                    "disable_start_menu_suggestions",
+                    "disable_lock_screen_tips",
+                    "disable_copilot",
+                    "set_rarely_used_services_manual",
+                    "disable_advertising_id",
+]
             ),
         ),
         PresetDefinition(
@@ -239,7 +256,6 @@ def build_presets(actions, baseline_targets: dict[str, bool] | None = None) -> l
                     "check_disk_errors",
                     "remove_shortcut_text",
                     "disable_enhance_pointer_precision",
-                    "adjust_mouse_trails",
                     "optimize_mouse_double_click",
                     "optimize_key_repeat_delay",
                     "disable_recent_files",

@@ -1,3 +1,10 @@
+"""Tweakify design system.
+
+One neutral "carbon" base, one accent (electric cyan), and semantic colors that only
+carry meaning (green = on/safe, amber = staged/advanced, red = experimental/failed).
+Surfaces are flat and layered by lightness instead of gradients and glow.
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -6,34 +13,34 @@ from dataclasses import dataclass
 @dataclass(frozen=True)
 class ThemePalette:
     mode: str
+    # Text
     text: str
     text_muted: str
-    text_detail: str
-    window_gradient_start: str
-    window_gradient_end: str
-    window_glow: str
+    text_subtle: str
+    # Layers, darkest to lightest (dark mode)
+    window: str
+    sidebar: str
     surface: str
-    surface_alt: str
-    surface_outline: str
-    surface_outline_hover: str
-    hero_start: str
-    hero_end: str
-    nav_fill: str
-    nav_border: str
-    nav_text: str
-    accent_start: str
-    accent_end: str
+    surface_raised: str
+    surface_hover: str
+    inset: str
+    border: str
+    border_strong: str
+    # Accent
+    accent: str
+    accent_hover: str
+    accent_pressed: str
     accent_text: str
-    switch_on: str
-    switch_off: str
-    switch_border: str
-    positive_fill: str
-    positive_border: str
-    warning_fill: str
-    warning_border: str
-    editor_fill: str
-    editor_border: str
-    scroll_track: str
+    accent_soft: str
+    accent_soft_border: str
+    # Semantic
+    positive: str
+    positive_soft: str
+    warning: str
+    warning_soft: str
+    danger: str
+    danger_soft: str
+    # Scrollbars
     scroll_thumb: str
     scroll_thumb_hover: str
 
@@ -41,71 +48,82 @@ class ThemePalette:
 PALETTES: dict[str, ThemePalette] = {
     "dark": ThemePalette(
         mode="dark",
-        text="#fff7fb",
-        text_muted="#dbcde9",
-        text_detail="#f1e6fb",
-        window_gradient_start="#2c1838",
-        window_gradient_end="#120b22",
-        window_glow="rgba(255, 132, 198, 118)",
-        surface="rgba(52, 27, 66, 198)",
-        surface_alt="rgba(71, 37, 89, 226)",
-        surface_outline="rgba(255, 255, 255, 20)",
-        surface_outline_hover="rgba(255, 207, 228, 86)",
-        hero_start="rgba(233, 95, 177, 214)",
-        hero_end="rgba(121, 90, 245, 214)",
-        nav_fill="rgba(255, 188, 229, 42)",
-        nav_border="rgba(255, 213, 236, 56)",
-        nav_text="#fff9fd",
-        accent_start="#ff77c8",
-        accent_end="#8a73ff",
-        accent_text="#190d24",
-        switch_on="rgba(255, 153, 210, 116)",
-        switch_off="rgba(255, 255, 255, 10)",
-        switch_border="rgba(255, 255, 255, 20)",
-        positive_fill="rgba(104, 220, 189, 86)",
-        positive_border="rgba(159, 255, 224, 134)",
-        warning_fill="rgba(255, 192, 132, 78)",
-        warning_border="rgba(255, 215, 171, 126)",
-        editor_fill="rgba(29, 16, 43, 232)",
-        editor_border="rgba(255, 255, 255, 16)",
-        scroll_track="rgba(255, 255, 255, 52)",
-        scroll_thumb="rgba(255, 247, 251, 214)",
-        scroll_thumb_hover="rgba(255, 255, 255, 242)",
+        text="#E9ECF2",
+        text_muted="#9AA1B2",
+        text_subtle="#6B7285",
+        window="#0B0D12",
+        sidebar="#0F1218",
+        surface="#13161D",
+        surface_raised="#191D26",
+        surface_hover="#1F2430",
+        inset="#0E1016",
+        border="#232836",
+        border_strong="#323A4D",
+        accent="#22D3EE",
+        accent_hover="#4BDDF2",
+        accent_pressed="#0FB5CF",
+        accent_text="#041218",
+        accent_soft="rgba(34, 211, 238, 30)",
+        accent_soft_border="rgba(34, 211, 238, 110)",
+        positive="#34D399",
+        positive_soft="rgba(52, 211, 153, 34)",
+        warning="#FBBF24",
+        warning_soft="rgba(251, 191, 36, 34)",
+        danger="#F87171",
+        danger_soft="rgba(248, 113, 113, 34)",
+        scroll_thumb="#2B3242",
+        scroll_thumb_hover="#3B4459",
     ),
     "light": ThemePalette(
         mode="light",
-        text="#34213f",
-        text_muted="#725f83",
-        text_detail="#4b3759",
-        window_gradient_start="#fde7f2",
-        window_gradient_end="#efe8ff",
-        window_glow="rgba(255, 153, 191, 126)",
-        surface="rgba(255, 255, 255, 205)",
-        surface_alt="rgba(255, 246, 252, 232)",
-        surface_outline="rgba(143, 101, 173, 34)",
-        surface_outline_hover="rgba(213, 110, 176, 78)",
-        hero_start="rgba(255, 164, 203, 214)",
-        hero_end="rgba(176, 153, 255, 214)",
-        nav_fill="rgba(255, 188, 221, 68)",
-        nav_border="rgba(193, 124, 177, 64)",
-        nav_text="#311f43",
-        accent_start="#f163ae",
-        accent_end="#8674ff",
-        accent_text="#ffffff",
-        switch_on="rgba(244, 118, 191, 86)",
-        switch_off="rgba(255, 255, 255, 138)",
-        switch_border="rgba(153, 111, 181, 44)",
-        positive_fill="rgba(107, 209, 175, 58)",
-        positive_border="rgba(79, 178, 146, 92)",
-        warning_fill="rgba(255, 189, 126, 60)",
-        warning_border="rgba(223, 161, 94, 92)",
-        editor_fill="rgba(255, 255, 255, 220)",
-        editor_border="rgba(146, 102, 181, 30)",
-        scroll_track="rgba(111, 72, 145, 36)",
-        scroll_thumb="rgba(120, 93, 201, 156)",
-        scroll_thumb_hover="rgba(107, 82, 196, 196)",
+        text="#141821",
+        text_muted="#5B6375",
+        text_subtle="#8A91A2",
+        window="#F3F5F8",
+        sidebar="#ECEFF4",
+        surface="#FFFFFF",
+        surface_raised="#F8F9FB",
+        surface_hover="#EEF1F6",
+        inset="#F4F6F9",
+        border="#DDE2EA",
+        border_strong="#C5CCD8",
+        accent="#0891B2",
+        accent_hover="#0AA3C8",
+        accent_pressed="#077A96",
+        accent_text="#FFFFFF",
+        accent_soft="rgba(8, 145, 178, 22)",
+        accent_soft_border="rgba(8, 145, 178, 110)",
+        positive="#059669",
+        positive_soft="rgba(5, 150, 105, 26)",
+        warning="#B45309",
+        warning_soft="rgba(217, 119, 6, 26)",
+        danger="#DC2626",
+        danger_soft="rgba(220, 38, 38, 22)",
+        scroll_thumb="#C9CFDA",
+        scroll_thumb_hover="#AEB6C5",
     ),
 }
+
+# Nav icons from Segoe Fluent Icons (Windows 11), which keeps the same code points
+# as Segoe MDL2 Assets (Windows 10) for these glyphs.
+ICON_FONTS = ("Segoe Fluent Icons", "Segoe MDL2 Assets")
+NAV_ICONS = {
+    "dashboard": "",  # Home
+    "presets": "",  # Library
+    "startup": "",  # Power
+    "performance": "",  # SpeedHigh
+    "gaming": "",  # Game
+    "network": "",  # Globe
+    "privacy": "",  # Shield
+    "services": "",  # Manage
+    "cleanup": "",  # Broom
+    "input_ui": "",  # Mouse
+    "graphics": "",  # TVMonitor
+    "compatibility": "",  # CheckList
+    "restore": "",  # History
+    "settings": "",  # Settings
+}
+BRAND_GLYPH = ""  # LightningBolt
 
 
 def resolve_theme_mode(preference: str, system_mode: str) -> str:
@@ -114,8 +132,16 @@ def resolve_theme_mode(preference: str, system_mode: str) -> str:
     return preference if preference in PALETTES else "dark"
 
 
-def _radius(compact: bool, normal: int, compact_value: int) -> int:
-    return compact_value if compact else normal
+def palette_for(mode: str) -> ThemePalette:
+    return PALETTES[resolve_theme_mode(mode, "dark")]
+
+
+def score_color(palette: ThemePalette, score: int) -> str:
+    if score >= 75:
+        return palette.positive
+    if score >= 55:
+        return palette.warning
+    return palette.danger
 
 
 def build_app_stylesheet(
@@ -123,206 +149,296 @@ def build_app_stylesheet(
     accent_intensity: float = 0.62,
     compact_mode: bool = False,
 ) -> str:
-    palette = PALETTES[resolve_theme_mode(resolved_theme_mode, "dark")]
-    accent_alpha = max(0.38, min(0.95, accent_intensity))
-    page_radius = _radius(compact_mode, 24, 18)
-    card_radius = _radius(compact_mode, 20, 16)
-    control_radius = _radius(compact_mode, 16, 13)
-    control_padding = "8px 12px" if compact_mode else "10px 15px"
-    scrollbar_margin = 10 if compact_mode else 14
+    p = palette_for(resolved_theme_mode)
+    intensity = max(0.2, min(1.0, accent_intensity))
+    selection_alpha = int(40 + 90 * intensity)
+    radius_lg = 10 if compact_mode else 12
+    radius_md = 7 if compact_mode else 8
+    radius_sm = 5 if compact_mode else 6
+    pad_btn = "6px 12px" if compact_mode else "8px 14px"
+    pad_nav = "7px 12px" if compact_mode else "9px 12px"
 
     return f"""
 QWidget {{
     background: transparent;
-    color: {palette.text};
-    font-family: "Segoe UI Variable Text", "Bahnschrift", "Trebuchet MS", "Segoe UI";
-    font-size: 10.5pt;
+    color: {p.text};
+    font-family: "Segoe UI Variable Text", "Segoe UI", "Inter", sans-serif;
+    font-size: 10pt;
 }}
 QMainWindow, QWidget#appRoot {{
-    background:
-        qradialgradient(cx:0.18, cy:0.14, radius:1.22, fx:0.18, fy:0.14,
-                        stop:0 {palette.window_glow},
-                        stop:0.32 rgba(255,255,255,0),
-                        stop:1 rgba(255,255,255,0)),
-        qradialgradient(cx:0.92, cy:0.06, radius:1.05, fx:0.92, fy:0.06,
-                        stop:0 rgba(255,255,255,0.16),
-                        stop:0.24 rgba(255,255,255,0),
-                        stop:1 rgba(255,255,255,0)),
-        qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                        stop:0 {palette.window_gradient_start},
-                        stop:1 {palette.window_gradient_end});
+    background: {p.window};
 }}
-QFrame#pagePanel,
-QFrame#metricCard,
-QFrame#actionCard,
-QFrame#presetCard,
-QFrame#heroPanel,
-QFrame#sectionGroup,
-QFrame#settingsGroup,
-QFrame#toolCard,
-QFrame#dependencyCard {{
-    background: {palette.surface};
-    border: 1px solid {palette.surface_outline};
-    border-radius: {page_radius}px;
+QToolTip {{
+    background: {p.surface_raised};
+    color: {p.text};
+    border: 1px solid {p.border_strong};
+    border-radius: {radius_sm}px;
+    padding: 6px 8px;
 }}
+
+/* ---------- Shell ---------- */
 QFrame#sidebarPanel {{
-    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                                stop:0 rgba(255,255,255,0.12),
-                                stop:1 rgba(255,255,255,0.04));
-    border: 1px solid {palette.surface_outline};
-    border-radius: {page_radius}px;
+    background: {p.sidebar};
+    border: 1px solid {p.border};
+    border-radius: {radius_lg}px;
 }}
 QFrame#reviewDrawer {{
-    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                                stop:0 {palette.surface_alt},
-                                stop:1 {palette.surface});
-    border: 1px solid {palette.surface_outline_hover};
-    border-radius: {page_radius}px;
+    background: {p.sidebar};
+    border: 1px solid {p.border};
+    border-radius: {radius_lg}px;
+}}
+QFrame#pagePanel {{
+    background: transparent;
+    border: none;
+}}
+QLabel#brandMark {{
+    background: {p.accent};
+    color: {p.accent_text};
+    border-radius: {radius_md}px;
+    font-family: "Segoe Fluent Icons", "Segoe MDL2 Assets";
+    font-size: 14pt;
+    qproperty-alignment: AlignCenter;
+}}
+QLabel#brandLabel {{
+    font-family: "Segoe UI Variable Display", "Segoe UI";
+    font-size: 15pt;
+    font-weight: 700;
+}}
+QLabel#navSectionLabel {{
+    color: {p.text_subtle};
+    font-size: 8pt;
+    font-weight: 700;
+    padding: 10px 12px 2px 12px;
+}}
+
+/* ---------- Navigation ---------- */
+QPushButton#navButton {{
+    background: transparent;
+    border: none;
+    border-left: 3px solid transparent;
+    border-radius: {radius_md}px;
+    color: {p.text_muted};
+    padding: {pad_nav};
+    text-align: left;
+    font-weight: 600;
+}}
+QPushButton#navButton:hover {{
+    background: {p.surface_hover};
+    color: {p.text};
+}}
+QPushButton#navButton:checked {{
+    background: {p.accent_soft};
+    border-left: 3px solid {p.accent};
+    color: {p.text};
+}}
+
+/* ---------- Surfaces ---------- */
+QFrame#heroPanel {{
+    background: transparent;
+    border: none;
+    border-bottom: 1px solid {p.border};
+    border-radius: 0px;
+    padding-bottom: 4px;
 }}
 QFrame#metricCard,
 QFrame#actionCard,
 QFrame#presetCard,
-QFrame#sectionGroup,
-QFrame#settingsGroup,
 QFrame#toolCard,
-QFrame#dependencyCard {{
-    border-radius: {card_radius}px;
+QFrame#dependencyCard,
+QFrame#settingsGroup,
+QFrame#healthCard,
+QFrame#summaryCard {{
+    background: {p.surface};
+    border: 1px solid {p.border};
+    border-radius: {radius_lg}px;
 }}
-QFrame#heroPanel {{
-    background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 {palette.hero_start}, stop:1 {palette.hero_end});
-    border: 1px solid {palette.surface_outline_hover};
-}}
-QFrame#pagePanel {{
-    background: rgba(255,255,255,0.02);
-}}
-QPushButton#navButton {{
-    background: rgba(255,255,255,0.02);
-    border: 1px solid rgba(255,255,255,0.02);
-    border-radius: {control_radius}px;
-    color: {palette.nav_text};
-    padding: 11px 16px;
-    text-align: left;
-    font-weight: 700;
-}}
-QPushButton#navButton:hover {{
-    background: {palette.nav_fill};
-    border-color: {palette.nav_border};
-}}
-QPushButton#navButton:checked {{
-    background: {palette.nav_fill};
-    border-color: {palette.surface_outline_hover};
-    color: {palette.nav_text};
-}}
-QPushButton#accentButton {{
-    background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 {palette.accent_start}, stop:1 {palette.accent_end});
-    color: {palette.accent_text};
+QFrame#sectionGroup {{
+    background: transparent;
     border: none;
-    border-radius: {control_radius}px;
-    padding: 11px 16px;
-    font-weight: 800;
 }}
-QPushButton#accentButton:hover {{
-    border: 1px solid rgba(255,255,255,88);
+QFrame#actionCard:hover,
+QFrame#presetCard:hover,
+QFrame#metricCard:hover {{
+    border-color: {p.border_strong};
+    background: {p.surface_raised};
 }}
-QPushButton#ghostButton,
-QPushButton#actionButton {{
-    background: {palette.surface_alt};
-    color: {palette.text};
-    border: 1px solid {palette.surface_outline};
-    border-radius: {control_radius}px;
-    padding: 10px 14px;
-    font-weight: 700;
+QFrame#actionCard[staged="true"] {{
+    border: 1px solid {p.warning};
 }}
-QPushButton#ghostButton:hover,
-QPushButton#actionButton:hover {{
-    border-color: {palette.surface_outline_hover};
+QFrame#summaryCard {{
+    border-left: 3px solid {p.accent};
 }}
-QPushButton#actionButton[staged="true"] {{
-    background: rgba(255,255,255,{int(56 * accent_alpha)});
-    border-color: {palette.surface_outline_hover};
-}}
-QPushButton#pillSwitch {{
-    min-width: 112px;
-    border-radius: {control_radius}px;
-    padding: 10px 16px;
-    font-weight: 800;
-    background: {palette.switch_off};
-    color: {palette.text};
-    border: 1px solid {palette.switch_border};
-}}
-QPushButton#pillSwitch:hover {{
-    border-color: {palette.surface_outline_hover};
-}}
-QPushButton#pillSwitch:checked {{
-    background: {palette.switch_on};
-    border: 1px solid {palette.surface_outline_hover};
-}}
-QPushButton:disabled {{
-    color: {palette.text_muted};
-    border-color: {palette.surface_outline};
-}}
+
+/* ---------- Type ---------- */
 QLabel#titleLabel {{
-    font-family: "Segoe UI Variable Display", "Bahnschrift", "Segoe UI";
-    font-size: 25px;
-    font-weight: 800;
+    font-family: "Segoe UI Variable Display", "Segoe UI";
+    font-size: 20pt;
+    font-weight: 700;
 }}
 QLabel#sectionTitle {{
-    font-family: "Segoe UI Variable Display", "Bahnschrift", "Segoe UI";
-    font-size: 16px;
-    font-weight: 800;
+    font-family: "Segoe UI Variable Display", "Segoe UI";
+    font-size: 11.5pt;
+    font-weight: 650;
+}}
+QLabel#groupTitle {{
+    color: {p.text_muted};
+    font-size: 8.5pt;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    padding: 6px 2px 0px 2px;
 }}
 QLabel#metricValue {{
-    font-family: "Segoe UI Variable Display", "Bahnschrift", "Segoe UI";
-    font-size: 21px;
-    font-weight: 800;
+    font-family: "Segoe UI Variable Display", "Segoe UI";
+    font-size: 17pt;
+    font-weight: 700;
+}}
+QLabel#metricValueSmall {{
+    font-family: "Segoe UI Variable Display", "Segoe UI";
+    font-size: 11pt;
+    font-weight: 650;
+}}
+QPushButton#linkButton {{
+    background: transparent;
+    border: none;
+    color: {p.accent};
+    font-weight: 600;
+    padding: 2px 4px;
+}}
+QPushButton#linkButton:hover {{
+    color: {p.accent_hover};
+    text-decoration: underline;
 }}
 QLabel#eyebrowLabel {{
-    color: {palette.text_muted};
-    font-size: 9.4pt;
+    color: {p.text_subtle};
+    font-size: 8.5pt;
     font-weight: 700;
     letter-spacing: 0.06em;
 }}
 QLabel#captionLabel {{
-    color: {palette.text_muted};
+    color: {p.text_muted};
 }}
 QLabel#detailLabel {{
-    color: {palette.text_detail};
-    line-height: 1.25em;
+    color: {p.text_muted};
+    background: {p.inset};
+    border: 1px solid {p.border};
+    border-radius: {radius_md}px;
+    padding: 8px 10px;
+    font-size: 9pt;
 }}
+
+/* ---------- Buttons ---------- */
+QPushButton#accentButton {{
+    background: {p.accent};
+    color: {p.accent_text};
+    border: 1px solid {p.accent};
+    border-radius: {radius_md}px;
+    padding: {pad_btn};
+    font-weight: 700;
+}}
+QPushButton#accentButton:hover {{
+    background: {p.accent_hover};
+    border-color: {p.accent_hover};
+}}
+QPushButton#accentButton:pressed {{
+    background: {p.accent_pressed};
+}}
+QPushButton#ghostButton,
+QPushButton#actionButton {{
+    background: {p.surface_raised};
+    color: {p.text};
+    border: 1px solid {p.border};
+    border-radius: {radius_md}px;
+    padding: {pad_btn};
+    font-weight: 600;
+}}
+QPushButton#ghostButton:hover,
+QPushButton#actionButton:hover {{
+    background: {p.surface_hover};
+    border-color: {p.border_strong};
+}}
+QPushButton#actionButton[staged="true"] {{
+    background: {p.warning_soft};
+    border-color: {p.warning};
+    color: {p.text};
+}}
+QPushButton#pillSwitch {{
+    min-width: 76px;
+    border-radius: 15px;
+    padding: 6px 14px;
+    font-weight: 700;
+    background: {p.inset};
+    color: {p.text_muted};
+    border: 1px solid {p.border_strong};
+}}
+QPushButton#pillSwitch:hover {{
+    border-color: {p.text_subtle};
+    color: {p.text};
+}}
+QPushButton#pillSwitch:checked {{
+    background: {p.accent};
+    color: {p.accent_text};
+    border: 1px solid {p.accent};
+}}
+QPushButton#pillSwitch:checked:hover {{
+    background: {p.accent_hover};
+}}
+QPushButton:disabled,
+QPushButton#pillSwitch:disabled,
+QPushButton#accentButton:disabled {{
+    background: {p.surface};
+    color: {p.text_subtle};
+    border-color: {p.border};
+}}
+
+/* ---------- Chips ---------- */
 QLabel#chipLabel,
 QLabel#stateChip,
 QLabel#changedChip {{
-    border-radius: 12px;
-    padding: 4px 10px;
-    font-size: 9pt;
+    border-radius: {radius_sm}px;
+    padding: 2px 8px;
+    font-size: 8.5pt;
     font-weight: 700;
 }}
+QLabel#chipLabel[tone="muted"],
 QLabel#chipLabel[tone="safety"] {{
-    background: rgba(255,255,255,{int(50 * accent_alpha)});
-    border: 1px solid {palette.surface_outline_hover};
-    color: {palette.text};
+    background: {p.surface_raised};
+    border: 1px solid {p.border};
+    color: {p.text_muted};
 }}
-QLabel#chipLabel[tone="muted"] {{
-    background: {palette.surface_alt};
-    border: 1px solid {palette.surface_outline};
-    color: {palette.text_muted};
+QLabel#chipLabel[tone="safe"] {{
+    background: {p.positive_soft};
+    border: 1px solid transparent;
+    color: {p.positive};
+}}
+QLabel#chipLabel[tone="advanced"],
+QLabel#chipLabel[tone="changed"] {{
+    background: {p.warning_soft};
+    border: 1px solid transparent;
+    color: {p.warning};
+}}
+QLabel#chipLabel[tone="experimental"] {{
+    background: {p.danger_soft};
+    border: 1px solid transparent;
+    color: {p.danger};
 }}
 QLabel#stateChip[tone="on"] {{
-    background: {palette.positive_fill};
-    border: 1px solid {palette.positive_border};
-    color: {palette.text};
+    background: {p.positive_soft};
+    border: 1px solid transparent;
+    color: {p.positive};
 }}
 QLabel#stateChip[tone="off"],
 QLabel#stateChip[tone="muted"] {{
-    background: {palette.surface_alt};
-    border: 1px solid {palette.surface_outline};
-    color: {palette.text};
+    background: {p.surface_raised};
+    border: 1px solid {p.border};
+    color: {p.text_muted};
 }}
 QLabel#changedChip {{
-    background: {palette.warning_fill};
-    border: 1px solid {palette.warning_border};
-    color: {palette.text};
+    background: {p.warning_soft};
+    border: 1px solid transparent;
+    color: {p.warning};
 }}
+
+/* ---------- Inputs and lists ---------- */
 QScrollArea,
 QStackedWidget,
 QWidget#moduleViewport,
@@ -330,42 +446,27 @@ QWidget#qt_scrollarea_viewport {{
     background: transparent;
     border: none;
 }}
-QTabWidget::pane {{
-    background: {palette.surface};
-    border: 1px solid {palette.surface_outline};
-    border-radius: {card_radius}px;
-    margin-top: 10px;
-}}
-QTabBar::tab {{
-    background: {palette.surface_alt};
-    border: 1px solid {palette.surface_outline};
-    border-bottom: none;
-    border-top-left-radius: {control_radius}px;
-    border-top-right-radius: {control_radius}px;
-    color: {palette.text_muted};
-    font-weight: 700;
-    padding: 9px 16px;
-    margin-right: 6px;
-}}
-QTabBar::tab:selected {{
-    background: rgba(255,255,255,{int(54 * accent_alpha)});
-    border-color: {palette.surface_outline_hover};
-    color: {palette.text};
-}}
-QTabBar::tab:hover {{
-    border-color: {palette.surface_outline_hover};
-}}
 QPlainTextEdit,
 QListWidget,
 QLineEdit,
 QSpinBox,
 QDoubleSpinBox,
 QComboBox {{
-    background: {palette.editor_fill};
-    border: 1px solid {palette.editor_border};
-    border-radius: {control_radius}px;
-    padding: 9px 11px;
-    selection-background-color: rgba(255,255,255,{int(60 * accent_alpha)});
+    background: {p.inset};
+    border: 1px solid {p.border};
+    border-radius: {radius_md}px;
+    padding: 7px 10px;
+    selection-background-color: rgba(34, 211, 238, {selection_alpha});
+    selection-color: {p.text};
+}}
+QPlainTextEdit {{
+    font-family: "Cascadia Mono", "Cascadia Code", "Consolas", monospace;
+    font-size: 9pt;
+    color: {p.text_muted};
+}}
+QLineEdit#searchBox {{
+    background: {p.surface};
+    padding: 8px 10px;
 }}
 QPlainTextEdit:focus,
 QListWidget:focus,
@@ -373,34 +474,84 @@ QLineEdit:focus,
 QSpinBox:focus,
 QDoubleSpinBox:focus,
 QComboBox:focus {{
-    border-color: {palette.surface_outline_hover};
+    border-color: {p.accent_soft_border};
 }}
 QComboBox::drop-down {{
     border: none;
     width: 22px;
 }}
+QComboBox QAbstractItemView {{
+    background: {p.surface_raised};
+    border: 1px solid {p.border_strong};
+    selection-background-color: {p.accent_soft};
+}}
 QListWidget::item {{
-    padding: 6px 4px;
-    border-radius: 8px;
+    padding: 6px 6px;
+    border-radius: {radius_sm}px;
+}}
+QListWidget::item:hover {{
+    background: {p.surface_hover};
 }}
 QListWidget::item:selected {{
-    background: rgba(255,255,255,{int(70 * accent_alpha)});
+    background: {p.accent_soft};
+    color: {p.text};
 }}
+QCheckBox {{
+    spacing: 8px;
+}}
+QCheckBox::indicator {{
+    width: 16px;
+    height: 16px;
+    border-radius: 4px;
+    border: 1px solid {p.border_strong};
+    background: {p.inset};
+}}
+QCheckBox::indicator:checked {{
+    background: {p.accent};
+    border-color: {p.accent};
+}}
+
+/* ---------- Tabs ---------- */
+QTabWidget::pane {{
+    background: transparent;
+    border: none;
+    border-top: 1px solid {p.border};
+    margin-top: 6px;
+}}
+QTabBar::tab {{
+    background: transparent;
+    border: none;
+    border-bottom: 2px solid transparent;
+    color: {p.text_muted};
+    font-weight: 600;
+    padding: 8px 14px;
+    margin-right: 4px;
+}}
+QTabBar::tab:selected {{
+    color: {p.text};
+    border-bottom: 2px solid {p.accent};
+}}
+QTabBar::tab:hover {{
+    color: {p.text};
+}}
+
+/* ---------- Scrollbars ---------- */
 QScrollBar:vertical {{
-    background: {palette.scroll_track};
+    background: transparent;
     width: 14px;
-    margin: {scrollbar_margin}px 8px {scrollbar_margin}px 6px;
-    border: 1px solid {palette.surface_outline};
+    margin: 4px 2px 4px 4px;
+    border: none;
     border-radius: 7px;
 }}
 QScrollBar::handle:vertical {{
-    background: {palette.scroll_thumb};
+    background: {p.scroll_thumb};
     border: none;
-    border-radius: 7px;
-    min-height: 56px;
+    border-radius: 4px;
+    min-height: 48px;
+    margin: 0px 3px;
 }}
 QScrollBar::handle:vertical:hover {{
-    background: {palette.scroll_thumb_hover};
+    background: {p.scroll_thumb_hover};
 }}
 QScrollBar::add-line:vertical,
 QScrollBar::sub-line:vertical,
@@ -411,20 +562,21 @@ QScrollBar::sub-page:vertical {{
     height: 0px;
 }}
 QScrollBar:horizontal {{
-    background: {palette.scroll_track};
+    background: transparent;
     height: 14px;
-    margin: 6px {scrollbar_margin}px 8px {scrollbar_margin}px;
-    border: 1px solid {palette.surface_outline};
+    margin: 4px 4px 2px 4px;
+    border: none;
     border-radius: 7px;
 }}
 QScrollBar::handle:horizontal {{
-    background: {palette.scroll_thumb};
+    background: {p.scroll_thumb};
     border: none;
-    border-radius: 7px;
-    min-width: 56px;
+    border-radius: 4px;
+    min-width: 48px;
+    margin: 3px 0px;
 }}
 QScrollBar::handle:horizontal:hover {{
-    background: {palette.scroll_thumb_hover};
+    background: {p.scroll_thumb_hover};
 }}
 QScrollBar::add-line:horizontal,
 QScrollBar::sub-line:horizontal,

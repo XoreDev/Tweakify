@@ -6,12 +6,15 @@ from pathlib import Path
 
 from PySide6.QtCore import (
     QObject,
+    QRectF,
     QRunnable,
+    QSize,
     QThreadPool,
     QTimer,
     Signal,
     Qt,
 )
+from PySide6.QtGui import QColor, QFont, QIcon, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QComboBox,
     QDoubleSpinBox,
@@ -38,12 +41,73 @@ from PySide6.QtWidgets import (
 )
 
 from app.controller import LOADING_RUNTIME_MESSAGE, MODULES
+from app.domain.health import format_bytes
 from app.domain.models import ActionKind
 from app.copy import ADMIN_PRIVILEGE_NOTE
-from app.ui.theme import build_app_stylesheet, resolve_theme_mode
+from app.ui.theme import BRAND_GLYPH, ICON_FONTS, NAV_ICONS, build_app_stylesheet, palette_for, resolve_theme_mode, score_color
 
 
 NVIDIA_PROFILE_INSPECTOR_RELEASES_URL = "https://github.com/Orbmu2k/nvidiaProfileInspector/releases"
+NVIDIA_CARD_NOTICE = (
+    "NVIDIA Profile Inspector powers Tweakify's NVIDIA driver tweaks (power mode, V-Sync, low latency, "
+    "refresh rate, texture filtering). They are written to the global driver profile and can be rolled back."
+)
+
+
+def glyph_icon(glyph: str, color: str, size: int = 18) -> QIcon:
+    """Render an icon-font glyph into a QIcon so buttons keep plain-text labels."""
+    pixmap = QPixmap(size * 2, size * 2)
+    pixmap.fill(Qt.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.Antialiasing)
+    painter.setRenderHint(QPainter.TextAntialiasing)
+    font = QFont(ICON_FONTS[0])
+    font.setFamilies(list(ICON_FONTS))
+    font.setPixelSize(int(size * 1.5))
+    painter.setFont(font)
+    painter.setPen(QColor(color))
+    painter.drawText(pixmap.rect(), Qt.AlignCenter, glyph)
+    painter.end()
+    pixmap.setDevicePixelRatio(2.0)
+    return QIcon(pixmap)
+
+
+class ScoreRing(QWidget):
+    """Circular 0-100 gauge for the health score."""
+
+    def __init__(self, diameter: int = 92) -> None:
+        super().__init__()
+        self.score: int | None = None
+        self.track = QColor("#232836")
+        self.color = QColor("#22D3EE")
+        self.text_color = QColor("#E9ECF2")
+        self.setFixedSize(diameter, diameter)
+
+    def set_score(self, score: int | None, color: str, track: str, text: str) -> None:
+        self.score = score
+        self.color, self.track, self.text_color = QColor(color), QColor(track), QColor(text)
+        self.update()
+
+    def paintEvent(self, _event) -> None:  # pragma: no cover - Qt paint path
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        inset = 7
+        rect = QRectF(inset, inset, self.width() - inset * 2, self.height() - inset * 2)
+        pen = QPen(self.track, 8)
+        pen.setCapStyle(Qt.RoundCap)
+        painter.setPen(pen)
+        painter.drawArc(rect, 0, 360 * 16)
+        if self.score is not None:
+            pen.setColor(self.color)
+            painter.setPen(pen)
+            painter.drawArc(rect, 90 * 16, int(-360 * 16 * max(0, min(100, self.score)) / 100))
+        font = QFont("Segoe UI Variable Display")
+        font.setPixelSize(int(self.height() * 0.3))
+        font.setBold(True)
+        painter.setFont(font)
+        painter.setPen(self.text_color)
+        painter.drawText(self.rect(), Qt.AlignCenter, "--" if self.score is None else str(self.score))
+        painter.end()
 
 
 def set_pointing_cursor(widget) -> None:
@@ -166,7 +230,8 @@ class MetricCard(QFrame):
         self.title_label = QLabel(title)
         self.title_label.setObjectName("eyebrowLabel")
         self.value_label = QLabel(value)
-        self.value_label.setObjectName("metricValue")
+        self.value_label.setObjectName("metricValue" if len(value) <= 18 else "metricValueSmall")
+        self.value_label.setWordWrap(True)
         self.detail_label = QLabel(detail)
         self.detail_label.setWordWrap(True)
         self.detail_label.setObjectName("captionLabel")
@@ -221,10 +286,16 @@ class ActionCard(QFrame):
 
         chip_row = QHBoxLayout()
         chip_row.setSpacing(8)
-        chip_row.addWidget(StatusChip(self.action.definition.safety_tier.value, tone="safety"))
+        chip_row.addWidget(StatusChip(self.action.definition.safety_tier.value, tone=self.action.definition.safety_tier.value.lower()))
         chip_row.addWidget(StatusChip(self.action.definition.scope.value.title(), tone="muted"))
         chip_row.addWidget(StatusChip(self._restart_copy(), tone="muted"))
         chip_row.addStretch(1)
+        self.details_button = QPushButton("Details")
+        self.details_button.setObjectName("linkButton")
+        self.details_button.setCheckable(True)
+        set_pointing_cursor(self.details_button)
+        self.details_button.toggled.connect(self._toggle_details)
+        chip_row.addWidget(self.details_button)
         layout.addLayout(chip_row)
 
         self.reason_label = QLabel()
@@ -240,8 +311,13 @@ class ActionCard(QFrame):
         )
         self.details_label.setWordWrap(True)
         self.details_label.setObjectName("detailLabel")
+        self.details_label.setVisible(False)
         layout.addWidget(self.details_label)
         self.refresh()
+
+    def _toggle_details(self, expanded: bool) -> None:
+        self.details_label.setVisible(expanded)
+        self.details_button.setText("Hide details" if expanded else "Details")
 
     def _restart_copy(self) -> str:
         mapping = {
@@ -298,6 +374,10 @@ class ActionCard(QFrame):
             self.changed_chip.setText("Staged")
 
         self.changed_chip.setHidden(not changed)
+        if self.property("staged") != changed:
+            self.setProperty("staged", changed)
+            self.style().unpolish(self)
+            self.style().polish(self)
 
         if self.decision.allowed:
             self.toggle.setEnabled(True)
@@ -331,12 +411,13 @@ class SectionGroup(QFrame):
         self.setObjectName("sectionGroup")
         self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
         layout = QVBoxLayout(self)
-        layout.setSpacing(10)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
 
         header = QVBoxLayout()
         header.setSpacing(2)
-        title_label = QLabel(title)
-        title_label.setObjectName("sectionTitle")
+        title_label = QLabel(title.upper())
+        title_label.setObjectName("groupTitle")
         header.addWidget(title_label)
         if subtitle:
             subtitle_label = QLabel(subtitle)
@@ -409,7 +490,7 @@ class DashboardPage(ScrollablePage):
         self.caption_label = self.subtitle_label
 
         self.summary_card = QFrame()
-        self.summary_card.setObjectName("heroPanel")
+        self.summary_card.setObjectName("summaryCard")
         summary_layout = QVBoxLayout(self.summary_card)
         summary_layout.setSpacing(8)
         self.safety_label = QLabel()
@@ -425,6 +506,40 @@ class DashboardPage(ScrollablePage):
         summary_layout.addWidget(self.admin_notice_label)
         self.body_layout.addWidget(self.summary_card)
 
+        self.stage_fixes_callback = None
+        self.health_card = QFrame()
+        self.health_card.setObjectName("healthCard")
+        health_layout = QVBoxLayout(self.health_card)
+        health_layout.setSpacing(10)
+        health_header = QHBoxLayout()
+        health_header.setSpacing(16)
+        self.score_ring = ScoreRing()
+        health_header.addWidget(self.score_ring, alignment=Qt.AlignVCenter)
+        health_title_column = QVBoxLayout()
+        health_title_column.setSpacing(2)
+        self.health_eyebrow = QLabel("System Health")
+        self.health_eyebrow.setObjectName("eyebrowLabel")
+        self.health_score_label = QLabel("--")
+        self.health_score_label.setObjectName("metricValue")
+        self.health_summary_label = QLabel()
+        self.health_summary_label.setObjectName("captionLabel")
+        self.health_summary_label.setWordWrap(True)
+        health_title_column.addWidget(self.health_eyebrow)
+        health_title_column.addWidget(self.health_score_label)
+        health_title_column.addWidget(self.health_summary_label)
+        health_header.addLayout(health_title_column, 1)
+        self.stage_fixes_button = QPushButton("Stage Recommended Fixes")
+        self.stage_fixes_button.setObjectName("accentButton")
+        set_pointing_cursor(self.stage_fixes_button)
+        self.stage_fixes_button.clicked.connect(self._stage_recommended_fixes)
+        health_header.addWidget(self.stage_fixes_button, alignment=Qt.AlignTop)
+        health_layout.addLayout(health_header)
+        self.health_findings = QListWidget()
+        self.health_findings.setObjectName("healthFindings")
+        self.health_findings.setFixedHeight(132)
+        health_layout.addWidget(self.health_findings)
+        self.body_layout.addWidget(self.health_card)
+
         quick_tools = QFrame()
         quick_tools.setObjectName("toolCard")
         quick_layout = QHBoxLayout(quick_tools)
@@ -435,9 +550,14 @@ class DashboardPage(ScrollablePage):
         self.restore_point_button.setObjectName("ghostButton")
         self.task_manager_button = QPushButton("Open Task Manager")
         self.task_manager_button.setObjectName("ghostButton")
-        for button in (self.refresh_button, self.restore_point_button, self.task_manager_button):
+        self.latency_button = QPushButton("Test Ping")
+        self.latency_button.setObjectName("ghostButton")
+        self.latency_label = QLabel()
+        self.latency_label.setObjectName("captionLabel")
+        for button in (self.refresh_button, self.restore_point_button, self.task_manager_button, self.latency_button):
             set_pointing_cursor(button)
             quick_layout.addWidget(button)
+        quick_layout.addWidget(self.latency_label)
         quick_layout.addStretch(1)
         self.body_layout.addWidget(quick_tools)
 
@@ -447,7 +567,7 @@ class DashboardPage(ScrollablePage):
         self.body_layout.addWidget(metrics_container)
 
         self.blocked_card = QFrame()
-        self.blocked_card.setObjectName("sectionGroup")
+        self.blocked_card.setObjectName("toolCard")
         blocked_layout = QVBoxLayout(self.blocked_card)
         blocked_title = QLabel("Current Blocks")
         blocked_title.setObjectName("sectionTitle")
@@ -471,6 +591,7 @@ class DashboardPage(ScrollablePage):
     def refresh(self, controller) -> None:
         self._refresh_metrics(controller)
         self.refresh_summary(controller)
+        self.refresh_health(controller)
         self.blocked_preview.setPlainText(controller.blocked_actions_text())
         self.history_list.clear()
         for transaction in controller.store.list_transactions()[:6]:
@@ -499,10 +620,48 @@ class DashboardPage(ScrollablePage):
             )
         )
 
+    def refresh_health(self, controller) -> None:
+        self.health_findings.clear()
+        if controller.runtime_pending:
+            self.score_ring.set_score(None, "#22D3EE", "#232836", "#9AA1B2")
+            self.health_score_label.setText("Scanning")
+            self.health_summary_label.setText("Calculating the health score once live diagnostics finish loading.")
+            self.stage_fixes_button.setEnabled(False)
+            return
+        report = controller.health_report()
+        palette = palette_for(getattr(self.window(), "resolved_theme_mode", "dark"))
+        self.score_ring.set_score(report.score, score_color(palette, report.score), palette.border, palette.text)
+        self.health_score_label.setText(report.grade)
+        self.health_summary_label.setText(report.summary)
+        colors = {"critical": palette.danger, "warning": palette.warning, "info": palette.accent, "ok": palette.positive}
+        for finding in report.findings:
+            item = QListWidgetItem(f"\u25cf  {finding.title}  \u2014  {finding.detail}", self.health_findings)
+            item.setForeground(QColor(colors.get(finding.severity, palette.text_muted)))
+        self.stage_fixes_button.setEnabled(bool(controller.recommended_fix_ids()))
+
+    def _stage_recommended_fixes(self) -> None:
+        added = self.controller.stage_recommended_fixes()
+        self.health_summary_label.setText(
+            f"Added {added} recommended change(s) to the review panel." if added else "Nothing new to stage."
+        )
+        if self.stage_fixes_callback is not None:
+            self.stage_fixes_callback()
+
     def _refresh_metrics(self, controller) -> None:
         clear_layout(self.metrics_layout)
-        for index, item in enumerate(controller.diagnostics.items):
+        items = list(controller.diagnostics.items)
+        for column in range(3):
+            self.metrics_layout.setColumnStretch(column, 1)
+        for index, item in enumerate(items):
             self.metrics_layout.addWidget(MetricCard(item.title, item.value, item.detail), index // 3, index % 3)
+        if controller.cleanup_sizes:
+            total = sum(controller.cleanup_sizes.values())
+            index = len(items)
+            self.metrics_layout.addWidget(
+                MetricCard("Recoverable Space", format_bytes(total), "Temp, update, crash-dump, thumbnail, and browser caches."),
+                index // 3,
+                index % 3,
+            )
 
     def _create_restore_point(self) -> None:
         created = self.controller.create_restore_point()
@@ -637,11 +796,25 @@ class StartupEntriesPanel(QFrame):
         self.entries_layout = QVBoxLayout()
         self.entries_layout.setSpacing(10)
         self.entries_layout.setAlignment(Qt.AlignTop)
-        layout.addWidget(title)
+        header_row = QHBoxLayout()
+        header_row.addWidget(title)
+        header_row.addStretch(1)
+        self.disable_all_button = QPushButton("Disable All")
+        self.disable_all_button.setObjectName("ghostButton")
+        self.disable_all_button.setToolTip("Stage every enabled startup entry off. Nothing changes until Apply.")
+        set_pointing_cursor(self.disable_all_button)
+        self.disable_all_button.clicked.connect(self._stage_disable_all)
+        header_row.addWidget(self.disable_all_button)
+        layout.addLayout(header_row)
         layout.addWidget(self.summary_label)
         layout.addWidget(self.duplicates_label)
         layout.addLayout(self.entries_layout)
         self.refresh()
+
+    def _stage_disable_all(self) -> None:
+        self.controller.stage_disable_all_startup()
+        self.refresh_staged_state()
+        self.on_change()
 
     def refresh(self) -> None:
         clear_layout(self.entries_layout)
@@ -842,10 +1015,47 @@ class ReviewDrawer(QFrame):
             button_row.addWidget(button)
         layout.addLayout(button_row)
 
+        plan_row = QHBoxLayout()
+        self.export_button = QPushButton("Export Plan")
+        self.export_button.setObjectName("ghostButton")
+        self.import_button = QPushButton("Import Plan")
+        self.import_button.setObjectName("ghostButton")
+        for button in (self.export_button, self.import_button):
+            set_pointing_cursor(button)
+            plan_row.addWidget(button)
+        layout.addLayout(plan_row)
+
         self.preview_button.clicked.connect(self.show_dry_run)
         self.apply_button.clicked.connect(self.apply)
         self.clear_button.clicked.connect(self.clear)
+        self.export_button.clicked.connect(self.export_plan)
+        self.import_button.clicked.connect(self.import_plan)
         self.refresh()
+
+    def export_plan(self) -> None:
+        if not self.controller.total_staged_count():
+            self.show_stage_result("Stage some changes before exporting a plan.")
+            return
+        path, _filter = QFileDialog.getSaveFileName(self, "Export Tweakify plan", str(Path.home() / "tweakify-plan.json"), "Tweakify plan (*.json)")
+        if not path:
+            return
+        self.controller.export_staged_plan(path)
+        self.result_message = f"Plan exported to {path}. Apply it on another PC with Import Plan or Tweakify.py --apply-plan."
+        self.plan_text.setPlainText(self.result_message)
+
+    def import_plan(self) -> None:
+        path, _filter = QFileDialog.getOpenFileName(self, "Import Tweakify plan", str(Path.home()), "Tweakify plan (*.json)")
+        if not path:
+            return
+        try:
+            skipped = self.controller.import_plan(path)
+        except (OSError, ValueError) as exc:
+            self.show_error(f"Could not import the plan: {exc}")
+            return
+        self.result_message = "Plan imported." + (
+            f" Skipped (not available on this PC): {', '.join(skipped)}." if skipped else ""
+        )
+        self.stage_refresh_callback()
 
     def refresh(self) -> None:
         self.staged_list.clear()
@@ -917,11 +1127,14 @@ class ReviewDrawer(QFrame):
         self._stop_apply_animation()
         self.set_busy(False)
         if transaction.requested_elevation:
-            self.result_message = (
-                "Machine-scope changes were serialized for the elevated helper. Re-run elevated to execute them."
+            self.result_message = "\n".join(transaction.notes) or (
+                "Machine-scope changes were serialized for the elevated helper."
             )
         else:
-            self.result_message = "\n".join(result.message for result in transaction.results) or "Nothing applied."
+            lines = [("FAILED  " if not result.success else "") + result.message for result in transaction.results]
+            failed = len(transaction.failed_results)
+            header = f"{len(transaction.results) - failed} applied, {failed} failed." if failed else ""
+            self.result_message = "\n".join(part for part in [header, *transaction.notes, *lines] if part) or "Nothing applied."
         self.refresh()
 
     def show_error(self, message: str) -> None:
@@ -931,7 +1144,7 @@ class ReviewDrawer(QFrame):
         self.plan_text.setPlainText(self.result_message)
 
     def set_busy(self, busy: bool) -> None:
-        for button in (self.preview_button, self.apply_button, self.clear_button):
+        for button in (self.preview_button, self.apply_button, self.clear_button, self.export_button, self.import_button):
             button.setEnabled(not busy)
 
     def _start_apply_animation(self) -> None:
@@ -1178,9 +1391,7 @@ class NvidiaDependencyCard(QFrame):
         self.legacy_label = QLabel()
         self.legacy_label.setObjectName("captionLabel")
         self.legacy_label.setWordWrap(True)
-        self.notice_label = QLabel(
-            "Downloading NVIDIA Profile Inspector does not enable Tweakify's legacy NVIDIA tweak actions. Those still require nvidiaInspector.exe."
-        )
+        self.notice_label = QLabel(NVIDIA_CARD_NOTICE)
         self.notice_label.setObjectName("detailLabel")
         self.notice_label.setWordWrap(True)
         layout.addWidget(title_label)
@@ -1219,16 +1430,12 @@ class NvidiaDependencyCard(QFrame):
             self.path_label.setText(
                 "Download the current NVIDIA Profile Inspector release or choose an existing nvidiaProfileInspector.exe copy."
             )
-        if detected_path:
-            self.legacy_label.setText(f"Legacy NVIDIA tweak CLI ready: {detected_path}")
-        else:
-            self.legacy_label.setText("Legacy NVIDIA tweak actions remain blocked until nvidiaInspector.exe is installed or selected.")
-        if helper_message:
-            self.notice_label.setText(
-                helper_message
-                + "\n"
-                + "Downloading NVIDIA Profile Inspector does not enable Tweakify's legacy NVIDIA tweak actions. Those still require nvidiaInspector.exe."
-            )
+        self.legacy_label.setText(
+            "NVIDIA driver tweaks are available on the Graphics page."
+            if profile_path
+            else "NVIDIA driver tweaks stay blocked until Profile Inspector is downloaded or selected."
+        )
+        self.notice_label.setText((helper_message + "\n" if helper_message else "") + NVIDIA_CARD_NOTICE)
 
     def set_busy(self, busy: bool) -> None:
         for button in (self.download_button, self.open_releases_button, self.choose_button, self.rescan_button):
@@ -1312,7 +1519,16 @@ class SettingsPage(ScrollablePage):
         container_layout.addWidget(self.nvidia_dependency_card)
         integrations.addRow(QLabel("Dependency helper"), container)
 
-        safety = self._create_group("Safety", "Expose Advanced and Experimental controls deliberately.", 2, 0, 2)
+        games = self._create_group(
+            "Games",
+            "Executables that get High CPU and I/O priority (Gaming > Game Profiles). Comma-separated, e.g. cs2.exe, FortniteClient-Win64-Shipping.exe",
+            2,
+            0,
+            2,
+        )
+        self._add_line_edit(games, "Game executables", "game_executables")
+
+        safety = self._create_group("Safety", "Expose Advanced and Experimental controls deliberately.", 3, 0, 2)
         self._add_checkbox(safety, "Show Advanced actions", "show_advanced")
         self._add_checkbox(safety, "Show Experimental actions", "show_experimental")
         self._add_checkbox(safety, "Stricter confirmation", "strict_confirmation")
@@ -1430,6 +1646,7 @@ class TweakifyMainWindow(QMainWindow):
         self.sidebar_buttons: list[QPushButton] = []
         self.action_cards: dict[str, ActionCard] = {}
         self.module_pages: dict[str, ModulePage] = {}
+        self.section_groups: list[SectionGroup] = []
         self.refresh_coordinator = RefreshCoordinator()
         self.refresh_coordinator.result_ready.connect(self._handle_background_result)
         self.refresh_coordinator.error.connect(self._handle_background_error)
@@ -1447,8 +1664,8 @@ class TweakifyMainWindow(QMainWindow):
         root = QWidget()
         root.setObjectName("appRoot")
         root_layout = QHBoxLayout(root)
-        root_layout.setContentsMargins(18, 18, 18, 18)
-        root_layout.setSpacing(16)
+        root_layout.setContentsMargins(12, 12, 12, 12)
+        root_layout.setSpacing(12)
 
         self.sidebar_panel = self._build_sidebar()
         self.stack = QStackedWidget()
@@ -1470,8 +1687,10 @@ class TweakifyMainWindow(QMainWindow):
         )
 
         self.module_pages = {
-            "performance": ModulePage("performance", "Performance", "Power, CPU responsiveness, and latency-oriented system controls."),
-            "network": ModulePage("network", "Network", "TCP, adapter, DNS, and background network controls with compatibility gating."),
+            "performance": ModulePage("performance", "Performance", "Power plans, device power management, memory, and file-system controls."),
+            "gaming": ModulePage("gaming", "Gaming", "Scheduler priority, CPU power, MMCSS, and Game Bar controls for smoother frame pacing."),
+            "network": ModulePage("network", "Network", "TCP, adapter, DNS provider, and background network controls with compatibility gating."),
+            "privacy": ModulePage("privacy", "Privacy", "Telemetry, ads, activity tracking, and Windows AI features such as Copilot and Recall."),
             "services": ModulePage("services", "Services", "Background policy, telemetry, notification, and service-oriented controls."),
             "cleanup": ModulePage("cleanup", "Cleanup", "Storage recovery, maintenance actions, and shell cleanup tools."),
             "input_ui": ModulePage("input_ui", "Input + UI", "Pointer, keyboard, animations, shell polish, and interaction-focused controls."),
@@ -1483,7 +1702,9 @@ class TweakifyMainWindow(QMainWindow):
             "presets": self.presets_page,
             "startup": self.startup_page,
             "performance": self.module_pages["performance"],
+            "gaming": self.module_pages["gaming"],
             "network": self.module_pages["network"],
+            "privacy": self.module_pages["privacy"],
             "services": self.module_pages["services"],
             "cleanup": self.module_pages["cleanup"],
             "input_ui": self.module_pages["input_ui"],
@@ -1497,6 +1718,19 @@ class TweakifyMainWindow(QMainWindow):
 
         self.review_drawer = ReviewDrawer(controller, self.refresh_staging, self.request_apply_staged)
         self.review_tray = self.review_drawer
+
+        # These used to run on the GUI thread and froze the window for the whole
+        # restore-point / rollback / baseline probe (often 10-60 seconds).
+        self.dashboard_page.stage_fixes_callback = self.refresh_staging
+        self.dashboard_page.latency_button.clicked.connect(self.request_latency_test)
+        self.dashboard_page.restore_point_button.clicked.disconnect()
+        self.dashboard_page.restore_point_button.clicked.connect(self.request_restore_point)
+        self.restore_page.restore_point_button.clicked.disconnect()
+        self.restore_page.restore_point_button.clicked.connect(self.request_restore_point)
+        self.restore_page.rollback_button.clicked.disconnect()
+        self.restore_page.rollback_button.clicked.connect(self.request_rollback_selected)
+        self.restore_page.baseline_button.clicked.disconnect()
+        self.restore_page.baseline_button.clicked.connect(self.request_capture_baseline)
 
         root_layout.addWidget(self.sidebar_panel)
         root_layout.addWidget(self.stack, 1)
@@ -1514,17 +1748,45 @@ class TweakifyMainWindow(QMainWindow):
         layout = QVBoxLayout(panel)
         layout.setSpacing(10)
 
+        layout.setContentsMargins(12, 14, 12, 12)
+        layout.setSpacing(4)
+        brand_row = QHBoxLayout()
+        brand_row.setSpacing(10)
+        brand_mark = QLabel(BRAND_GLYPH)
+        brand_mark.setObjectName("brandMark")
+        brand_mark.setFixedSize(34, 34)
+        brand_text = QVBoxLayout()
+        brand_text.setSpacing(0)
         brand = QLabel("Tweakify")
-        brand.setObjectName("titleLabel")
+        brand.setObjectName("brandLabel")
         self.sidebar_subtitle = QLabel("Performance Toolkit")
         self.sidebar_subtitle.setObjectName("captionLabel")
-        layout.addWidget(brand)
-        layout.addWidget(self.sidebar_subtitle)
+        brand_text.addWidget(brand)
+        brand_text.addWidget(self.sidebar_subtitle)
+        brand_row.addWidget(brand_mark)
+        brand_row.addLayout(brand_text, 1)
+        layout.addLayout(brand_row)
+        layout.addSpacing(10)
 
+        self.search_box = QLineEdit()
+        self.search_box.setObjectName("searchBox")
+        self.search_box.setPlaceholderText("Search tweaks...")
+        self.search_box.setClearButtonEnabled(True)
+        self.search_box.textChanged.connect(self._apply_search_filter)
+        layout.addWidget(self.search_box)
+        self._nav_labels = [label for _module_id, label in MODULES]
+
+        section_breaks = {"dashboard": "OVERVIEW", "performance": "TUNE", "compatibility": "SYSTEM"}
         for index, (_module_id, label) in enumerate(MODULES):
+            if _module_id in section_breaks:
+                section_label = QLabel(section_breaks[_module_id])
+                section_label.setObjectName("navSectionLabel")
+                layout.addWidget(section_label)
             button = QPushButton(label)
             button.setCheckable(True)
             button.setObjectName("navButton")
+            button.setProperty("module_id", _module_id)
+            button.setIconSize(QSize(18, 18))
             set_pointing_cursor(button)
             button.clicked.connect(partial(self._set_page, index))
             if index == 0:
@@ -1549,7 +1811,12 @@ class TweakifyMainWindow(QMainWindow):
         font = self.font()
         font.setPointSizeF(10.5 * float(self.controller.settings.font_scale))
         self.setFont(font)
-        self.sidebar_panel.setFixedWidth(232 if self.controller.settings.compact_mode else 258)
+        self.sidebar_panel.setFixedWidth(212 if self.controller.settings.compact_mode else 236)
+        palette = palette_for(self.resolved_theme_mode)
+        for button in self.sidebar_buttons:
+            glyph = NAV_ICONS.get(str(button.property("module_id")), "")
+            if glyph:
+                button.setIcon(glyph_icon(glyph, palette.text_muted))
         self.review_drawer.setFixedWidth(380 if self.controller.settings.compact_mode else 408)
         self.review_drawer.setVisible(bool(self.controller.settings.review_tray_open))
         apply_windows_backdrop(self, self.resolved_theme_mode)
@@ -1569,8 +1836,65 @@ class TweakifyMainWindow(QMainWindow):
         )
         return card
 
+    def _apply_search_filter(self, text: str = "") -> None:
+        query = text.strip().casefold()
+        counts: dict[str, int] = {}
+        for card in self.action_cards.values():
+            definition = card.action.definition
+            haystack = " ".join(
+                [definition.title, definition.description, definition.what_it_changes, definition.public_group, definition.id]
+            ).casefold()
+            match = not query or all(term in haystack for term in query.split())
+            card.setVisible(match)
+            if match:
+                counts[definition.module_id] = counts.get(definition.module_id, 0) + 1
+        for group in self.section_groups:
+            cards = group.findChildren(ActionCard)
+            group.setVisible(not query or any(not card.isHidden() for card in cards))
+        for index, (module_id, _label) in enumerate(MODULES):
+            if index >= len(self.sidebar_buttons):
+                break
+            base = self._nav_labels[index]
+            if query and module_id in self.module_pages or (query and module_id == "startup"):
+                self.sidebar_buttons[index].setText(f"{base}  ({counts.get(module_id, 0)})")
+            else:
+                self.sidebar_buttons[index].setText(base)
+
+    def request_latency_test(self) -> None:
+        self.dashboard_page.latency_label.setText("Pinging 1.1.1.1, 8.8.8.8, 9.9.9.9...")
+        self.dashboard_page.latency_button.setEnabled(False)
+        self.refresh_coordinator.request("latency", self.controller.run_latency_test)
+
+    def request_restore_point(self) -> None:
+        self.dashboard_page.summary_caption.setText("Creating a Windows restore point in the background...")
+        self.restore_page.details.setPlainText("Creating a Windows restore point in the background...")
+        self.refresh_coordinator.request("restore_point", self.controller.create_restore_point)
+
+    def request_capture_baseline(self) -> None:
+        self.restore_page.details.setPlainText("Capturing a new baseline in the background...")
+        self.refresh_coordinator.request("baseline_manual", self.controller.capture_new_baseline)
+
+    def request_rollback_selected(self) -> None:
+        row = self.restore_page.snapshot_list.currentRow()
+        snapshots = self.controller.store.list_snapshots()
+        if row < 0 or row >= len(snapshots):
+            return
+        snapshot = snapshots[row]
+        answer = QMessageBox.question(
+            self,
+            "Roll back snapshot",
+            f"Restore {len(snapshot.action_entries)} setting(s) from '{snapshot.label}' ({snapshot.created_at[:19]})?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if answer != QMessageBox.Yes:
+            return
+        self.restore_page.details.setPlainText("Rolling back in the background...")
+        self.refresh_coordinator.request("rollback", lambda: self.controller.rollback_snapshot(snapshot.snapshot_id))
+
     def _populate_module_pages(self) -> None:
         self.action_cards = {}
+        self.section_groups = []
         self.startup_entries_panel = None
         self.graphics_nvidia_card = None
         if self.startup_page is not None:
@@ -1601,6 +1925,7 @@ class TweakifyMainWindow(QMainWindow):
                         )
                         self.action_cards[action.definition.id] = card
                         group.cards_layout.addWidget(card)
+                    self.section_groups.append(group)
                     self.startup_page.tweaks_layout.addWidget(group)
         for module_id, page in self.module_pages.items():
             page.clear()
@@ -1632,8 +1957,11 @@ class TweakifyMainWindow(QMainWindow):
                     )
                     self.action_cards[action.definition.id] = card
                     group.cards_layout.addWidget(card)
+                self.section_groups.append(group)
                 page.content_layout.addWidget(group)
             page.content_layout.addStretch(1)
+        if hasattr(self, "search_box") and self.search_box.text():
+            self._apply_search_filter(self.search_box.text())
 
     def _refresh_action_cards(self) -> None:
         for action_id, card in self.action_cards.items():
@@ -1766,6 +2094,36 @@ class TweakifyMainWindow(QMainWindow):
             self.nvidia_helper_message = result.message
             self.controller.refresh_integrations_only()
             self._refresh_integration_surfaces()
+            return
+        if domain == "latency":
+            self.dashboard_page.latency_button.setEnabled(True)
+            parts = [f"{host} {'timeout' if ms is None else f'{ms:.0f} ms'}" for host, ms in result.items()]
+            self.dashboard_page.latency_label.setText("   ".join(parts) or "Ping test unavailable.")
+            return
+        if domain == "restore_point":
+            message = "Windows restore point created." if result else (
+                "Windows could not create a restore point. Check that System Protection is on for the system drive."
+            )
+            self.dashboard_page.summary_caption.setText(message)
+            self.restore_page.details.setPlainText(message)
+            return
+        if domain == "baseline_manual":
+            self.restore_page.refresh()
+            self.presets_page.refresh()
+            return
+        if domain == "rollback":
+            failed = result.failed_results
+            # rollback_snapshot already re-probed machine state on the worker thread.
+            startup_state = self._capture_startup_page_state()
+            self._populate_module_pages()
+            self._refresh_current_surfaces()
+            self._restore_startup_page_state(startup_state)
+            self.restore_page.details.setPlainText(
+                "\n".join(
+                    [f"Rolled back {len(result.results) - len(failed)} item(s)" + (f", {len(failed)} failed." if failed else ".")]
+                    + [item.message for item in result.results]
+                )
+            )
 
     def _handle_background_error(self, domain: str, message: str) -> None:
         if domain == "runtime":
@@ -1781,6 +2139,13 @@ class TweakifyMainWindow(QMainWindow):
             self._set_nvidia_cards_busy(False)
             self.nvidia_helper_message = f"Download failed: {message}"
             self._refresh_integration_surfaces()
+            return
+        if domain == "latency":
+            self.dashboard_page.latency_button.setEnabled(True)
+            self.dashboard_page.latency_label.setText(f"Ping test failed: {message}")
+            return
+        if domain in {"restore_point", "rollback", "baseline_manual"}:
+            self.restore_page.details.setPlainText(f"{domain.replace('_', ' ').title()} failed: {message}")
 
     def _handle_setting_change(self, name: str, value) -> None:
         self.controller.update_setting(name, value)
@@ -1801,6 +2166,12 @@ class TweakifyMainWindow(QMainWindow):
         }
         safety_settings = {"show_advanced", "show_experimental", "strict_confirmation"}
         integration_settings = {"nvidia_inspector_path", "nvidia_profile_inspector_path"}
+
+        if name == "game_executables":
+            self._populate_module_pages()
+            self.compatibility_page.refresh(self.controller)
+            self.refresh_staging()
+            return
 
         if name in appearance_settings:
             self._apply_runtime_settings()
@@ -1845,6 +2216,11 @@ class TweakifyMainWindow(QMainWindow):
         self.dashboard_page.refresh_summary(self.controller)
         if stage_result is not None and not self.controller.total_staged_count():
             self.review_drawer.show_stage_result(stage_result.message)
+        elif self.controller.last_stage_notice:
+            self.review_drawer.refresh()
+            self.review_drawer.summary_label.setText(
+                self.review_drawer.summary_label.text() + " " + self.controller.last_stage_notice
+            )
         else:
             self.review_drawer.refresh()
         self._restore_startup_page_state(startup_state)

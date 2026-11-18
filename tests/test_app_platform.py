@@ -5,6 +5,8 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from app.actions.catalog import build_action_catalog
 from app.platform.adapters import InMemoryPlatformFacade, WindowsPlatformFacade
 from app.platform.elevation import ElevationManager
@@ -88,27 +90,36 @@ def test_elevation_launch_uses_hidden_process_kwargs(monkeypatch, tmp_path: Path
     manager = ElevationManager(root=tmp_path)
     captured: dict[str, object] = {}
 
+    def fake_shell_execute(hwnd, verb, file, parameters, directory, show):
+        captured.update(verb=verb, file=file, parameters=parameters, show=show)
+        return 42
+
     monkeypatch.setattr(
-        "app.platform.elevation.hidden_process_kwargs",
-        lambda: {"creationflags": 64, "startupinfo": "hidden"},
+        "app.platform.elevation.ctypes.windll",
+        SimpleNamespace(shell32=SimpleNamespace(ShellExecuteW=fake_shell_execute)),
+        raising=False,
     )
 
-    def fake_popen(command, **kwargs):
-        captured["command"] = command
-        captured["kwargs"] = kwargs
-        return SimpleNamespace()
+    launcher = r"C:\Users\Jane O'Neil\Tweakify\Tweakify.py"
+    manager.launch_elevated([r"C:\Python 313\python.exe", launcher, "--apply-plan", "plan file.json"])
 
-    monkeypatch.setattr("app.platform.elevation.subprocess.Popen", fake_popen)
+    assert captured["verb"] == "runas"
+    assert captured["file"] == r"C:\Python 313\python.exe"
+    # Paths with spaces and apostrophes stay single arguments.
+    assert captured["parameters"] == f'"{launcher}" --apply-plan "plan file.json"'
 
-    manager.launch_elevated(["py", str(ROOT / "Tweakify.py"), "--apply-plan", "plan.json"])
 
-    assert captured["command"] == [
-        "powershell",
-        "-NoProfile",
-        "-Command",
-        f"Start-Process -FilePath 'py' -ArgumentList '{ROOT / 'Tweakify.py'}', '--apply-plan', 'plan.json' -Verb RunAs",
-    ]
-    assert captured["kwargs"] == {"creationflags": 64, "startupinfo": "hidden"}
+def test_elevation_reports_declined_uac_prompt(monkeypatch, tmp_path: Path):
+    from app.platform.elevation import ElevationDeclined
+
+    monkeypatch.setattr(
+        "app.platform.elevation.ctypes.windll",
+        SimpleNamespace(shell32=SimpleNamespace(ShellExecuteW=lambda *args: 5)),
+        raising=False,
+    )
+
+    with pytest.raises(ElevationDeclined):
+        ElevationManager(root=tmp_path).launch_elevated(["python.exe", "Tweakify.py"])
 
 
 def test_nvidia_detection_only_enables_when_binary_exists(tmp_path: Path):
@@ -453,7 +464,7 @@ def test_profile_inspector_download_extracts_latest_release_to_managed_tools_dir
         def __init__(self, payload: bytes):
             self._payload = payload
 
-        def read(self) -> bytes:
+        def read(self, size: int = -1) -> bytes:
             return self._payload
 
         def __enter__(self):
@@ -462,7 +473,8 @@ def test_profile_inspector_download_extracts_latest_release_to_managed_tools_dir
         def __exit__(self, exc_type, exc, tb):
             return False
 
-    def fake_urlopen(request):
+    def fake_urlopen(request, timeout=None):
+        assert timeout is not None, "network calls must not be able to hang forever"
         url = getattr(request, "full_url", request)
         if str(url).endswith("/releases"):
             payload = json.dumps(
@@ -472,14 +484,14 @@ def test_profile_inspector_download_extracts_latest_release_to_managed_tools_dir
                         "assets": [
                             {
                                 "name": "nvidiaProfileInspector.zip",
-                                "browser_download_url": "https://example.com/npi.zip",
+                                "browser_download_url": "https://github.com/Orbmu2k/npi.zip",
                             }
                         ],
                     }
                 ]
             ).encode("utf-8")
             return FakeResponse(payload)
-        if str(url) == "https://example.com/npi.zip":
+        if str(url) == "https://github.com/Orbmu2k/npi.zip":
             return FakeResponse(archive_bytes)
         raise AssertionError(f"unexpected URL: {url}")
 
@@ -508,7 +520,7 @@ def test_profile_inspector_download_reports_failures(monkeypatch, tmp_path: Path
     local_app_data = tmp_path / "LocalAppData"
     monkeypatch.setenv("LOCALAPPDATA", str(local_app_data))
     platform = WindowsPlatformFacade(tmp_path)
-    monkeypatch.setattr("urllib.request.urlopen", lambda _request: (_ for _ in ()).throw(OSError("network down")))
+    monkeypatch.setattr("urllib.request.urlopen", lambda _request, timeout=None: (_ for _ in ()).throw(OSError("network down")))
 
     result = platform.download_nvidia_profile_inspector()
 

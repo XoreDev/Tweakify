@@ -9,14 +9,15 @@ import textwrap
 from pathlib import Path
 from typing import Callable, Sequence, TextIO
 
-from PySide6.QtCore import QObject, QThread, QTimer, Qt, Signal, Slot
-from PySide6.QtGui import QColor, QFont, QLinearGradient, QPainter, QPen, QPixmap
+from PySide6.QtCore import QObject, QRectF, QThread, QTimer, Qt, Signal, Slot
+from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import QApplication, QMessageBox, QSplashScreen
 
 from app.controller import TweakifyController
-from app.platform.elevation import ElevationManager
+from app.platform.elevation import ElevationDeclined, ElevationManager
 from app.platform.adapters import WindowsPlatformFacade
 from app.ui.main_window import TweakifyMainWindow
+from app.ui.theme import BRAND_GLYPH, ICON_FONTS, palette_for
 
 
 LOADING_MESSAGE = "Loading Tweakify GUI"
@@ -48,35 +49,101 @@ class BootstrapWorker(QObject):
         self.finished.emit(controller)
 
 
+SPLASH_SIZE = (440, 208)
+SPLASH_MARGIN = 12  # transparent border so the card's rounded corners stay crisp
+
+
+def _windows_theme_mode() -> str:
+    """Read the Windows app theme before any Tweakify state exists."""
+    try:
+        import winreg
+
+        with winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize"
+        ) as key:
+            value, _ = winreg.QueryValueEx(key, "AppsUseLightTheme")
+        return "light" if int(value) == 1 else "dark"
+    except (ImportError, OSError, ValueError):
+        return "dark"
+
+
 class LoadingSplash(QSplashScreen):
-    def __init__(self, pixmap: QPixmap, title: str) -> None:
+    """Startup card in the app's design system: brand mark, status line, and an indeterminate bar."""
+
+    def __init__(self, pixmap: QPixmap, title: str, theme_mode: str = "dark") -> None:
         super().__init__(pixmap)
         self.title = title
         self.detail = LOADING_DETAIL_FRAMES[-1]
+        self.frame = 0
+        self.palette_tokens = palette_for(theme_mode)
         self.setWindowFlag(Qt.WindowStaysOnTopHint, True)
         self.setWindowFlag(Qt.FramelessWindowHint, True)
+        self.setAttribute(Qt.WA_TranslucentBackground, True)
 
     def set_detail(self, detail: str) -> None:
         self.detail = detail
+        self.frame += 1
         self.repaint()
         QApplication.processEvents()
 
     def drawContents(self, painter: QPainter) -> None:  # pragma: no cover - Qt paint path
+        p = self.palette_tokens
         painter.setRenderHint(QPainter.Antialiasing)
+        painter.setRenderHint(QPainter.TextAntialiasing)
+        card = QRectF(self.rect()).adjusted(SPLASH_MARGIN, SPLASH_MARGIN, -SPLASH_MARGIN, -SPLASH_MARGIN)
+        left = card.left() + 28
 
-        title_rect = self.rect().adjusted(34, 42, -34, -74)
-        detail_rect = self.rect().adjusted(34, 104, -34, -28)
+        # Brand mark: accent tile with the bolt glyph.
+        mark = QRectF(left, card.top() + 30, 44, 44)
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor(p.accent))
+        painter.drawRoundedRect(mark, 10, 10)
+        icon_font = QFont(ICON_FONTS[0])
+        icon_font.setFamilies(list(ICON_FONTS))
+        icon_font.setPixelSize(22)
+        painter.setFont(icon_font)
+        painter.setPen(QColor(p.accent_text))
+        painter.drawText(mark, Qt.AlignCenter, BRAND_GLYPH)
 
-        painter.setPen(QColor(255, 248, 252))
-        title_font = QFont("Segoe UI", 17, QFont.Bold)
-        title_font.setLetterSpacing(QFont.PercentageSpacing, 103)
+        # Name and tagline.
+        text_left = mark.right() + 16
+        title_font = QFont("Segoe UI Variable Display")
+        title_font.setFamilies(["Segoe UI Variable Display", "Segoe UI"])
+        title_font.setPixelSize(24)
+        title_font.setWeight(QFont.Bold)
         painter.setFont(title_font)
-        painter.drawText(title_rect, Qt.AlignHCenter | Qt.AlignVCenter, self.title)
+        painter.setPen(QColor(p.text))
+        painter.drawText(QRectF(text_left, mark.top() - 4, card.width(), 30), Qt.AlignLeft | Qt.AlignVCenter, "Tweakify")
+        caption_font = QFont("Segoe UI Variable Text")
+        caption_font.setFamilies(["Segoe UI Variable Text", "Segoe UI"])
+        caption_font.setPixelSize(13)
+        painter.setFont(caption_font)
+        painter.setPen(QColor(p.text_muted))
+        painter.drawText(QRectF(text_left, mark.top() + 24, card.width(), 22), Qt.AlignLeft | Qt.AlignVCenter, "Performance Toolkit")
 
-        painter.setPen(QColor(255, 239, 247, 220))
-        detail_font = QFont("Segoe UI", 9)
-        painter.setFont(detail_font)
-        painter.drawText(detail_rect, Qt.AlignHCenter | Qt.AlignTop | Qt.TextWordWrap, self.detail)
+        # Status line.
+        painter.setPen(QColor(p.text_muted))
+        painter.drawText(
+            QRectF(left, card.bottom() - 66, card.width() - 56, 20),
+            Qt.AlignLeft | Qt.AlignVCenter,
+            self.detail,
+        )
+
+        # Indeterminate progress bar: an accent segment sweeping across a track.
+        track = QRectF(left, card.bottom() - 36, card.width() - 56, 4)
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor(p.border))
+        painter.drawRoundedRect(track, 2, 2)
+        segment = track.width() * 0.28
+        travel = track.width() + segment
+        offset = (self.frame * 0.07 % 1.0) * travel - segment
+        clip = QPainterPath()
+        clip.addRoundedRect(track, 2, 2)
+        painter.save()
+        painter.setClipPath(clip)
+        painter.setBrush(QColor(p.accent))
+        painter.drawRoundedRect(QRectF(track.left() + offset, track.top(), segment, track.height()), 2, 2)
+        painter.restore()
 
 
 def _root() -> Path:
@@ -111,20 +178,32 @@ def _is_running_as_admin() -> bool:
 
 
 def _should_relaunch_as_admin(args: argparse.Namespace) -> bool:
-    return not (args.apply_plan or args.rollback_snapshot)
+    return not (args.apply_plan or args.rollback_snapshot or args.run_actions)
 
 
-def _relaunch_as_admin(argv_list: Sequence[str]) -> int:
+def _relaunch_as_admin(argv_list: Sequence[str]) -> int | None:
+    """Relaunch through UAC. Returns None when elevation was declined."""
     manager = ElevationManager(_data_root(_root()) / "plans")
     command = [sys.executable, str(_launcher_path()), *argv_list]
-    manager.launch_elevated(command)
+    try:
+        manager.launch_elevated(command)
+    except ElevationDeclined as exc:
+        # Before, a dismissed UAC prompt made the app exit with no window and no
+        # message. Continue un-elevated instead; user-scope tweaks still work.
+        print(str(exc), file=sys.stderr)
+        return None
     return 0
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Tweakify GUI rewrite")
-    parser.add_argument("--apply-plan", type=Path)
-    parser.add_argument("--rollback-snapshot", type=str)
+    parser = argparse.ArgumentParser(description="Tweakify: staged Windows tuning with rollback")
+    parser.add_argument("--apply-plan", type=Path, help="Apply a plan JSON exported from Tweakify, then exit.")
+    parser.add_argument("--rollback-snapshot", type=str, help="Roll back a recorded snapshot by id, then exit.")
+    parser.add_argument(
+        "--run-actions",
+        type=str,
+        help="Comma-separated action ids to apply (maintenance runs once), then exit. Used by scheduled maintenance.",
+    )
     return parser
 
 
@@ -137,7 +216,7 @@ def should_show_console_loading(
     is_interactive = bool(getattr(stream, "isatty", lambda: False)())
     if not is_interactive:
         return False
-    suppressed_flags = {"-h", "--help", "--apply-plan", "--rollback-snapshot"}
+    suppressed_flags = {"-h", "--help", "--apply-plan", "--rollback-snapshot", "--run-actions"}
     return not any(flag in args for flag in suppressed_flags)
 
 
@@ -218,37 +297,58 @@ def _print_console_loaded_banner(stdout: TextIO | None = None) -> None:
     stream.flush()
 
 
+def _report_transaction(transaction) -> int:
+    for result in transaction.results:
+        print(("OK   " if result.success else "FAIL ") + result.message)
+    for note in getattr(transaction, "notes", []):
+        print("NOTE " + note)
+    return 1 if transaction.failed_results else 0
+
+
 def _apply_cli_request(controller: TweakifyController, args: argparse.Namespace) -> int | None:
     if args.apply_plan:
-        payload = json.loads(args.apply_plan.read_text(encoding="utf-8"))
-        for change in payload.get("changes", []):
-            controller.stage_action(change["action_id"], change["target_state"])
-        for change in payload.get("startup_changes", []):
-            controller.stage_startup_entry(change["entry_id"], change["target_enabled"])
-        controller.apply_staged()
-        return 0
+        try:
+            payload = json.loads(args.apply_plan.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            print(f"Could not read plan {args.apply_plan}: {exc}", file=sys.stderr)
+            return 2
+        controller.stage_plan_payload(payload)
+        return _report_transaction(controller.apply_staged())
 
     if args.rollback_snapshot:
-        controller.rollback_snapshot(args.rollback_snapshot)
-        return 0
+        if controller.store.load_snapshot(args.rollback_snapshot) is None:
+            print(f"Snapshot {args.rollback_snapshot} was not found.", file=sys.stderr)
+            return 2
+        return _report_transaction(controller.rollback_snapshot(args.rollback_snapshot))
+
+    if args.run_actions:
+        unknown = controller.stage_action_ids([item.strip() for item in args.run_actions.split(",") if item.strip()])
+        for action_id in unknown:
+            print(f"Unknown action id: {action_id}", file=sys.stderr)
+        return _report_transaction(controller.apply_staged())
 
     return None
 
 
 def _create_loading_splash(_app: QApplication, message: str = LOADING_MESSAGE) -> QSplashScreen:
-    pixmap = QPixmap(420, 180)
+    theme_mode = _windows_theme_mode()
+    tokens = palette_for(theme_mode)
+    pixmap = QPixmap(*SPLASH_SIZE)
     pixmap.fill(Qt.transparent)
 
     painter = QPainter(pixmap)
     painter.setRenderHint(QPainter.Antialiasing)
-    gradient = QLinearGradient(0, 0, pixmap.width(), pixmap.height())
-    gradient.setColorAt(0.0, QColor(233, 95, 177, 224))
-    gradient.setColorAt(1.0, QColor(121, 90, 245, 224))
-    painter.setBrush(gradient)
-    painter.setPen(QPen(QColor(255, 255, 255, 70), 1))
-    painter.drawRoundedRect(10, 10, pixmap.width() - 20, pixmap.height() - 20, 28, 28)
+    card = QRectF(pixmap.rect()).adjusted(SPLASH_MARGIN, SPLASH_MARGIN, -SPLASH_MARGIN, -SPLASH_MARGIN)
+    # Soft drop shadow, then the card itself.
+    for spread, alpha in ((8, 18), (5, 28), (2, 40)):
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor(0, 0, 0, alpha))
+        painter.drawRoundedRect(card.adjusted(-spread, -spread + 3, spread, spread + 3), 14 + spread, 14 + spread)
+    painter.setBrush(QColor(tokens.surface))
+    painter.setPen(QPen(QColor(tokens.border), 1))
+    painter.drawRoundedRect(card, 14, 14)
     painter.end()
-    return LoadingSplash(pixmap, message)
+    return LoadingSplash(pixmap, message, theme_mode)
 
 
 def _exec_application(app: QApplication) -> int:
@@ -349,13 +449,16 @@ def main(argv: list[str] | None = None, launch_mode: str = "console") -> int:
     argv_list = list(sys.argv[1:] if argv is None else argv)
     args = _build_parser().parse_args(argv_list)
 
-    controller = _controller(startup_profile="full") if (args.apply_plan or args.rollback_snapshot) else None
+    headless = bool(args.apply_plan or args.rollback_snapshot or args.run_actions)
+    controller = _controller(startup_profile="full") if headless else None
     cli_result = _apply_cli_request(controller, args) if controller is not None else None
     if cli_result is not None:
         return cli_result
 
     if _should_relaunch_as_admin(args) and not _is_running_as_admin():
-        return _relaunch_as_admin(argv_list)
+        relaunched = _relaunch_as_admin(argv_list)
+        if relaunched is not None:
+            return relaunched
 
     return _run_interactive_session(lambda: _controller(startup_profile="light"), launch_mode)
 

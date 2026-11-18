@@ -2,6 +2,7 @@ from pathlib import Path
 
 from PySide6.QtCore import Qt
 
+from app.controller import MODULES
 from app.platform.adapters import InMemoryPlatformFacade
 from app.ui.main_window import TweakifyMainWindow
 from tests.conftest import build_controller
@@ -26,7 +27,9 @@ def test_main_window_renders_sidebar_and_dashboard(qapp, tmp_path: Path):
         "Presets",
         "Startup",
         "Performance",
+        "Gaming",
         "Network",
+        "Privacy",
         "Services",
         "Cleanup",
         "Input + UI",
@@ -78,7 +81,7 @@ def test_blocked_actions_show_why_not_explanations(qapp, tmp_path: Path):
     window = TweakifyMainWindow(controller)
 
     text = window.compatibility_page.blocked_list.toPlainText()
-    assert "nvidiaInspector.exe" in text
+    assert "nvidiaProfileInspector.exe" in text
     assert "unavailable in this build" not in text.lower()
     assert "legacy" not in text.lower()
     assert "batch" not in text.lower()
@@ -138,6 +141,7 @@ def test_settings_page_renders_public_setting_groups(qapp, tmp_path: Path):
         "Behavior",
         "Diagnostics",
         "Integrations",
+        "Games",
         "Safety",
     }
     assert "theme_mode" in window.settings_page.controls
@@ -425,7 +429,7 @@ def test_settings_compact_mode_keeps_cards_top_aligned(qapp, tmp_path: Path):
     controller = build_controller(tmp_path, platform=InMemoryPlatformFacade())
     window = TweakifyMainWindow(controller)
     window.resize(1360, 900)
-    window._set_page(11)
+    window._set_page(next(index for index, (module_id, _label) in enumerate(MODULES) if module_id == "settings"))
     qapp.processEvents()
 
     window._handle_setting_change("compact_mode", True)

@@ -29,9 +29,9 @@ RUNTIME_FILES = (
     "requirements.txt",
     "install_requirements.bat",
 )
-RUNTIME_TOOLS = (
-    "nvidiaInspector.exe",
-)
+# Third-party tools are downloaded at runtime (see the NVIDIA card in Settings), never
+# bundled: the repo used to ship a 4-byte text file named nvidiaInspector.exe.
+RUNTIME_TOOLS: tuple[str, ...] = ()
 
 def _copy_tree(source: Path, destination: Path) -> None:
     shutil.copytree(

@@ -3,13 +3,49 @@ from __future__ import annotations
 from app.actions.base import (
     CompositeInterfaceRegistryAction,
     CompositeTcpAction,
+    DnsServerEffect,
+    EffectAction,
+    NetAdapterAdvancedPropertyEffect,
     NetAdapterFeatureAction,
     RegistryPlanAction,
     RegistryValueSpec,
     ServicePlanAction,
     TcpGlobalAction,
 )
+from app.actions.helpers import definition, policy
 from app.domain.models import ActionDefinition, RestartRequirement, SafetyTier, Scope
+
+
+DNS_PROVIDERS = {
+    "dns_cloudflare": ("Cloudflare", ["1.1.1.1", "1.0.0.1"], "Usually the fastest public resolver, with a no-logging policy."),
+    "dns_google": ("Google Public DNS", ["8.8.8.8", "8.8.4.4"], "Very reliable worldwide anycast resolver."),
+    "dns_quad9": ("Quad9", ["9.9.9.9", "149.112.112.112"], "Blocks known malware and phishing domains at the resolver."),
+}
+
+
+def _dns_actions(platform) -> list:
+    actions = []
+    for action_id, (provider, servers, why) in DNS_PROVIDERS.items():
+        actions.append(
+            EffectAction(
+                platform,
+                definition(
+                    action_id,
+                    f"Use {provider} DNS",
+                    "network",
+                    "DNS",
+                    f"Points every connected adapter at {provider} ({', '.join(servers)}).",
+                    f"Sets the IPv4 DNS servers on each active physical adapter to {', '.join(servers)} and flushes the DNS cache.",
+                    why + " ISP resolvers are often slower and some hijack typos with ads.",
+                    "Overrides DNS from your router, which breaks local hostnames some home networks rely on.",
+                    rollback="Puts each adapter back to its previous DNS servers, or back to automatic (DHCP).",
+                    tier=SafetyTier.SAFE,
+                    conflicts_with=tuple(other for other in DNS_PROVIDERS if other != action_id),
+                ),
+                [DnsServerEffect(platform, servers, provider)],
+            )
+        )
+    return actions
 
 
 def build_actions(platform) -> list:
@@ -95,16 +131,7 @@ def build_actions(platform) -> list:
                 safety_tier=SafetyTier.SAFE,
                 public_group="Resolution",
             ),
-            [
-                RegistryValueSpec(
-                    path=r"HKLM\SOFTWARE\Policies\Microsoft\Windows NT\DNSClient",
-                    name="EnableMulticast",
-                    value_type="REG_DWORD",
-                    enabled_value=0,
-                    disabled_value=1,
-                    delete_on_disable=False,
-                )
-            ],
+            [policy(r"HKLM\SOFTWARE\Policies\Microsoft\Windows NT\DNSClient", "EnableMulticast", 0)],
         ),
         RegistryPlanAction(
             platform,
@@ -178,16 +205,7 @@ def build_actions(platform) -> list:
                 safety_tier=SafetyTier.ADVANCED,
                 public_group="Services",
             ),
-            [
-                RegistryValueSpec(
-                    path=r"HKLM\SOFTWARE\Policies\Microsoft\Windows\Psched",
-                    name="NonBestEffortLimit",
-                    value_type="REG_DWORD",
-                    enabled_value=0,
-                    disabled_value=20,
-                    delete_on_disable=False,
-                )
-            ],
+            [policy(r"HKLM\SOFTWARE\Policies\Microsoft\Windows\Psched", "NonBestEffortLimit", 0)],
         ),
         RegistryPlanAction(
             platform,
@@ -281,17 +299,68 @@ def build_actions(platform) -> list:
                 title="Optimize Network Services",
                 module_id="network",
                 legacy_label="OptimizeNetworkServices",
-                description="Tunes TCP heuristics, DCA, and RSS as a grouped network-service action.",
-                what_it_changes="Disables TCP heuristics and enables DCA and RSS where the stack supports them.",
+                description="Turns off TCP window-scaling heuristics and makes sure Receive-Side Scaling is on.",
+                what_it_changes="Disables TCP scaling heuristics and enables RSS through netsh.",
                 why_it_may_help="Can reduce conservative TCP behavior and improve packet handling on some systems.",
                 downside="Benefit varies by NIC driver quality and Windows build.",
-                rollback="Restores the previous TCP heuristics, DCA, and RSS values from the snapshot.",
+                rollback="Restores the previous TCP heuristics and RSS values from the snapshot.",
                 scope=Scope.MACHINE,
                 restart_requirement=RestartRequirement.NONE,
                 safety_tier=SafetyTier.ADVANCED,
                 public_group="Services",
             ),
-            enabled_values={"heuristics": "disabled", "dca": "enabled", "rss": "enabled"},
-            disabled_values={"heuristics": "enabled", "dca": "disabled", "rss": "enabled"},
+            # DCA was removed from netsh in Windows 10; setting it only produced an error.
+            enabled_values={"heuristics": "disabled", "rss": "enabled"},
+            disabled_values={"heuristics": "enabled", "rss": "enabled"},
+        ),
+        *_dns_actions(platform),
+        EffectAction(
+            platform,
+            definition(
+                "disable_interrupt_moderation",
+                "Disable NIC Interrupt Moderation",
+                "network",
+                "Adapters",
+                "Makes the network card raise an interrupt for every packet instead of batching them.",
+                "Sets the *InterruptModeration adapter property to 0 on every physical adapter that supports it.",
+                "Removes a small, fixed packet delay that matters in latency-sensitive games.",
+                "More CPU interrupts under heavy downloads. Adapters reconnect for a moment when applied.",
+                rollback="Restores each adapter's previous value.",
+                tier=SafetyTier.ADVANCED,
+            ),
+            [NetAdapterAdvancedPropertyEffect(platform, "*InterruptModeration", "0", "1")],
+        ),
+        EffectAction(
+            platform,
+            definition(
+                "disable_energy_efficient_ethernet",
+                "Disable Energy-Efficient Ethernet",
+                "network",
+                "Adapters",
+                "Stops the Ethernet link from dropping into low-power idle between packets.",
+                "Sets the *EEE adapter property to 0 on every physical adapter that supports it.",
+                "Avoids wake-up latency and the link drops some routers and switches have with EEE.",
+                "Slightly higher idle power. Adapters reconnect for a moment when applied.",
+                rollback="Restores each adapter's previous value.",
+                tier=SafetyTier.SAFE,
+            ),
+            [NetAdapterAdvancedPropertyEffect(platform, "*EEE", "0", "1")],
+        ),
+        RegistryPlanAction(
+            platform,
+            definition(
+                "disable_teredo",
+                "Disable Teredo Tunneling",
+                "network",
+                "Adapters",
+                "Turns off the Teredo IPv6-over-UDP tunnel.",
+                "Sets the Teredo_State policy to Disabled.",
+                "Removes a background tunnel some games and NAT tests trip over, and an extra NAT path.",
+                "Xbox party chat and some peer-to-peer apps that rely on Teredo may report a strict NAT.",
+                rollback="Removes the policy again.",
+                restart=RestartRequirement.RESTART,
+                tier=SafetyTier.ADVANCED,
+            ),
+            [policy(r"HKLM\SOFTWARE\Policies\Microsoft\Windows\TCPIP\v6Transition", "Teredo_State", "Disabled", "REG_SZ")],
         ),
     ]

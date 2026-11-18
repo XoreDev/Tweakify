@@ -1,7 +1,22 @@
 from __future__ import annotations
 
-from app.actions.base import PowerPlanAction, RegistryPlanAction, RegistryValueSpec
+from app.actions.base import (
+    EffectAction,
+    HibernationEffect,
+    MemoryAgentEffect,
+    PowerPlanAction,
+    PowerSettingEffect,
+    RegistryPlanAction,
+    RegistryValueSpec,
+)
+from app.actions.helpers import definition, setting
 from app.domain.models import ActionDefinition, RestartRequirement, SafetyTier, Scope
+
+
+SUB_USB = "2a737441-1930-4402-8d77-b2bebba308a3"
+USB_SELECTIVE_SUSPEND = "48e6b7a6-50f5-4782-a5d4-53bb8f07e226"
+SUB_PCIEXPRESS = "501a4d13-42af-4429-9fd1-a8218c268e20"
+PCIE_ASPM = "ee12f906-d277-404b-b6da-e5fa1a576df5"
 
 
 def build_actions(platform) -> list:
@@ -17,13 +32,32 @@ def build_actions(platform) -> list:
                 what_it_changes="Sets the active power plan to High performance and restores Balanced when turned off.",
                 why_it_may_help="Helps desktops and plugged-in gaming systems favor performance over power savings.",
                 downside="Can increase power draw, heat, and fan noise.",
-                rollback="Returns the active plan to the previous baseline or Balanced when disabled directly.",
+                rollback="Returns the active plan to the previous plan (by GUID) from the snapshot.",
                 scope=Scope.MACHINE,
                 restart_requirement=RestartRequirement.NONE,
                 safety_tier=SafetyTier.SAFE,
                 public_group="Power",
+                conflicts_with=("ultimate_performance_power_plan",),
             ),
             enabled_plan="High performance",
+            disabled_plan="Balanced",
+        ),
+        PowerPlanAction(
+            platform,
+            definition(
+                "ultimate_performance_power_plan",
+                "Ultimate Performance Power Plan",
+                "performance",
+                "Power",
+                "Unlocks and activates the hidden Ultimate Performance plan.",
+                "Duplicates the Ultimate Performance scheme if it is missing, then makes it active.",
+                "Removes the last micro power-saving delays. Meant for desktop workstations and gaming rigs.",
+                "Highest idle power draw of any plan. Not for laptops on battery.",
+                rollback="Returns the active plan to the previous plan (by GUID) from the snapshot.",
+                tier=SafetyTier.ADVANCED,
+                conflicts_with=("high_performance_power_plan",),
+            ),
+            enabled_plan="Ultimate Performance",
             disabled_plan="Balanced",
         ),
         RegistryPlanAction(
@@ -49,117 +83,7 @@ def build_actions(platform) -> list:
                     name="VisualFXSetting",
                     value_type="REG_DWORD",
                     enabled_value=2,
-                    disabled_value=1,
-                    delete_on_disable=False,
-                )
-            ],
-        ),
-        RegistryPlanAction(
-            platform,
-            ActionDefinition(
-                id="disable_game_mode",
-                title="Disable Game Mode",
-                module_id="performance",
-                legacy_label="DisableGameMode",
-                description="Turns off Windows Game Mode for users who prefer a fixed background profile instead.",
-                what_it_changes="Sets AutoGameModeEnabled to zero in the current-user Game Bar settings.",
-                why_it_may_help="Useful when Game Mode interferes with a manually tuned setup or benchmark flow.",
-                downside="Some systems perform better with Game Mode left on.",
-                rollback="Restores the previous Game Mode toggle from the snapshot.",
-                scope=Scope.USER,
-                restart_requirement=RestartRequirement.LOGOFF,
-                safety_tier=SafetyTier.SAFE,
-                public_group="Gaming",
-            ),
-            [
-                RegistryValueSpec(
-                    path=r"HKCU\Software\Microsoft\GameBar",
-                    name="AutoGameModeEnabled",
-                    value_type="REG_DWORD",
-                    enabled_value=0,
-                    disabled_value=1,
-                    delete_on_disable=False,
-                )
-            ],
-        ),
-        RegistryPlanAction(
-            platform,
-            ActionDefinition(
-                id="optimize_cpu_priority",
-                title="Optimize CPU Priority",
-                module_id="performance",
-                legacy_label="OptimizeCPUPriority",
-                description="Biases Windows scheduling slightly toward foreground responsiveness.",
-                what_it_changes="Sets Win32PrioritySeparation under PriorityControl.",
-                why_it_may_help="Can improve responsiveness for active foreground workloads.",
-                downside="May reduce fairness for background workloads.",
-                rollback="Restores or removes the Win32PrioritySeparation override from the snapshot.",
-                scope=Scope.MACHINE,
-                restart_requirement=RestartRequirement.LOGOFF,
-                safety_tier=SafetyTier.ADVANCED,
-                public_group="Scheduler",
-            ),
-            [
-                RegistryValueSpec(
-                    path=r"HKLM\SYSTEM\CurrentControlSet\Control\PriorityControl",
-                    name="Win32PrioritySeparation",
-                    value_type="REG_DWORD",
-                    enabled_value=2,
-                )
-            ],
-        ),
-        RegistryPlanAction(
-            platform,
-            ActionDefinition(
-                id="increase_system_responsiveness",
-                title="Increase System Responsiveness",
-                module_id="performance",
-                legacy_label="IncreaseSystemResponsiveness",
-                description="Tunes the Multimedia System Profile responsiveness percentage.",
-                what_it_changes="Sets SystemResponsiveness under the Multimedia SystemProfile key.",
-                why_it_may_help="Can reduce background multimedia reservation and favor foreground work.",
-                downside="It is an advanced scheduler tweak with workload-dependent benefit.",
-                rollback="Restores the previous SystemResponsiveness value from the snapshot.",
-                scope=Scope.MACHINE,
-                restart_requirement=RestartRequirement.RESTART,
-                safety_tier=SafetyTier.ADVANCED,
-                public_group="Scheduler",
-            ),
-            [
-                RegistryValueSpec(
-                    path=r"HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile",
-                    name="SystemResponsiveness",
-                    value_type="REG_DWORD",
-                    enabled_value=0,
-                    disabled_value=20,
-                    delete_on_disable=False,
-                )
-            ],
-        ),
-        RegistryPlanAction(
-            platform,
-            ActionDefinition(
-                id="reduce_input_delay",
-                title="Reduce Input Delay",
-                module_id="performance",
-                legacy_label="ReduceInputDelay",
-                description="Sets NetworkThrottlingIndex to its unthrottled value.",
-                what_it_changes="Writes NetworkThrottlingIndex under the Multimedia SystemProfile key.",
-                why_it_may_help="Can reduce background multimedia throttling on some gaming workloads.",
-                downside="This is an experimental latency tweak with mixed real-world benefit.",
-                rollback="Restores the previous NetworkThrottlingIndex value from the snapshot.",
-                scope=Scope.MACHINE,
-                restart_requirement=RestartRequirement.RESTART,
-                safety_tier=SafetyTier.EXPERIMENTAL,
-                public_group="Latency",
-            ),
-            [
-                RegistryValueSpec(
-                    path=r"HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile",
-                    name="NetworkThrottlingIndex",
-                    value_type="REG_DWORD",
-                    enabled_value=0xFFFFFFFF,
-                    disabled_value=10,
+                    disabled_value=0,
                     delete_on_disable=False,
                 )
             ],
@@ -171,9 +95,9 @@ def build_actions(platform) -> list:
                 title="Disable Last Access Timestamp",
                 module_id="performance",
                 legacy_label="DisableLastAccessTimestamp",
-                description="Removes NTFS last-access updates on the local machine.",
-                what_it_changes="Sets NtfsDisableLastAccessUpdate in the file-system policy key.",
-                why_it_may_help="Reduces metadata writes on busy disks.",
+                description="Stops NTFS from writing a last-access time on every file read.",
+                what_it_changes="Sets NtfsDisableLastAccessUpdate to 1 (user-managed, disabled).",
+                why_it_may_help="Reduces metadata writes on busy disks, especially HDDs.",
                 downside="Tools that rely on last-access timestamps lose fidelity.",
                 rollback="Restores the prior NtfsDisableLastAccessUpdate state from the snapshot.",
                 scope=Scope.MACHINE,
@@ -187,37 +111,91 @@ def build_actions(platform) -> list:
                     name="NtfsDisableLastAccessUpdate",
                     value_type="REG_DWORD",
                     enabled_value=1,
-                    disabled_value=0,
+                    # 0x80000002 is the system-managed value fresh Windows 10/11 installs ship with.
+                    # The old code wrote 0 here, which forced last-access updates *on*.
+                    disabled_value=0x80000002,
                     delete_on_disable=False,
                 )
             ],
         ),
+        EffectAction(
+            platform,
+            definition(
+                "disable_usb_selective_suspend",
+                "Disable USB Selective Suspend",
+                "performance",
+                "Devices",
+                "Stops Windows from powering down idle USB devices on the active power plan.",
+                "Sets the USB selective suspend power setting to Disabled for AC and battery.",
+                "Fixes mice, headsets, and DACs that drop out or lag after being idle.",
+                "Slightly higher idle power draw, mostly noticeable on laptops.",
+                tier=SafetyTier.ADVANCED,
+                legacy_label="OptimizeUSBSelectiveSuspend",
+            ),
+            [PowerSettingEffect(platform, SUB_USB, USB_SELECTIVE_SUSPEND, 0, 1, "USB selective suspend")],
+        ),
+        EffectAction(
+            platform,
+            definition(
+                "disable_pcie_link_power_management",
+                "Disable PCIe Link State Power Management",
+                "performance",
+                "Devices",
+                "Keeps PCI Express links at full power instead of dropping into ASPM low-power states.",
+                "Sets Link State Power Management to Off on the active power plan.",
+                "Avoids wake-up latency on GPUs and NVMe drives coming out of low-power link states.",
+                "Higher idle power draw.",
+                tier=SafetyTier.ADVANCED,
+            ),
+            [PowerSettingEffect(platform, SUB_PCIEXPRESS, PCIE_ASPM, 0, 1, "PCIe link state power management")],
+        ),
+        EffectAction(
+            platform,
+            definition(
+                "disable_hibernation",
+                "Disable Hibernation",
+                "performance",
+                "Shell & Power",
+                "Turns hibernation off and deletes hiberfil.sys.",
+                "Runs powercfg /hibernate off.",
+                "Frees disk space equal to a large share of installed RAM.",
+                "Fast Startup and Hibernate stop working. Laptops lose their low-battery safety net.",
+                rollback="Runs powercfg /hibernate on when the snapshot had it enabled.",
+                tier=SafetyTier.ADVANCED,
+            ),
+            [HibernationEffect(platform)],
+        ),
         RegistryPlanAction(
             platform,
-            ActionDefinition(
-                id="optimize_usb_selective_suspend",
-                title="Optimize USB Selective Suspend",
-                module_id="performance",
-                legacy_label="OptimizeUSBSelectiveSuspend",
-                description="Applies the old USB soft-remove tweak for devices that dislike power-state transitions.",
-                what_it_changes="Sets DisableOnSoftRemove under the USB hub parameters key.",
-                why_it_may_help="Can reduce reconnect delays on devices that dislike suspend transitions.",
-                downside="May slightly increase idle power usage on some systems.",
-                rollback="Restores the previous USB hub parameter value from the snapshot.",
-                scope=Scope.MACHINE,
-                restart_requirement=RestartRequirement.RESTART,
-                safety_tier=SafetyTier.ADVANCED,
-                public_group="Devices",
+            definition(
+                "disable_fast_startup",
+                "Disable Fast Startup",
+                "performance",
+                "Shell & Power",
+                "Makes Shut down a real shutdown instead of a partial hibernate.",
+                "Sets HiberbootEnabled to 0 under Session Manager\\Power.",
+                "Drivers and the kernel start fresh every boot, which fixes many 'only after shutdown' bugs.",
+                "Cold boots take a few seconds longer.",
+                restart=RestartRequirement.RESTART,
+                tier=SafetyTier.SAFE,
             ),
-            [
-                RegistryValueSpec(
-                    path=r"HKLM\SYSTEM\CurrentControlSet\Services\usbhub\Parameters",
-                    name="DisableOnSoftRemove",
-                    value_type="REG_DWORD",
-                    enabled_value=1,
-                    disabled_value=0,
-                    delete_on_disable=False,
-                )
-            ],
+            [setting(r"HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Power", "HiberbootEnabled", 0, 1)],
+        ),
+        EffectAction(
+            platform,
+            definition(
+                "disable_memory_compression",
+                "Disable Memory Compression",
+                "performance",
+                "Memory",
+                "Turns off the Memory Manager's in-RAM page compression.",
+                "Runs Disable-MMAgent -MemoryCompression.",
+                "On systems with plenty of RAM (16 GB+), avoids CPU time spent compressing pages.",
+                "On 8 GB or less it makes paging to disk more likely, which is much slower.",
+                rollback="Runs Enable-MMAgent -MemoryCompression when the snapshot had it on.",
+                restart=RestartRequirement.RESTART,
+                tier=SafetyTier.ADVANCED,
+            ),
+            [MemoryAgentEffect(platform, "MemoryCompression", enabled_value=False)],
         ),
     ]

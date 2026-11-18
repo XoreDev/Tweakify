@@ -19,7 +19,9 @@ def test_build_portable_creates_source_portable_folder(tmp_path: Path):
     assert (output_dir / "install_requirements.bat").exists()
     assert (output_dir / "app" / "__main__.py").exists()
     assert not (output_dir / "app" / "storage" / "legacy.py").exists()
-    assert (output_dir / "tools" / "nvidiaInspector.exe").exists()
+    # No placeholder binaries: the old build shipped a 4-byte text file named nvidiaInspector.exe.
+    assert not (output_dir / "tools" / "nvidiaInspector.exe").exists()
+    assert (output_dir / "tools").is_dir()
     assert (output_dir / "README.txt").exists()
     assert (output_dir / "data" / "snapshots").is_dir()
     assert (output_dir / "data" / "apply-logs").is_dir()

@@ -185,7 +185,21 @@ def test_compatibility_blocks_nvidia_actions_without_dependency():
     decision = compatibility.evaluate(context, nvidia_action.definition)
 
     assert decision.allowed is False
-    assert any("nvidiaInspector.exe" in reason for reason in decision.reasons)
+    assert any("nvidiaProfileInspector.exe" in reason for reason in decision.reasons)
+
+
+def test_compatibility_blocks_nvidia_actions_on_non_nvidia_gpu(tmp_path: Path):
+    platform = InMemoryPlatformFacade()
+    platform.gpu_vendors = ("AMD",)
+    exe = tmp_path / "nvidiaProfileInspector.exe"
+    exe.write_text("stub", encoding="utf-8")
+    platform.set_dependency_path("nvidiaProfileInspector.exe", exe)
+    actions = {action.definition.id: action for action in build_action_catalog(platform)}
+
+    decision = CompatibilityService().evaluate(platform.machine_context(), actions["nvidia_vertical_sync_off"].definition)
+
+    assert decision.allowed is False
+    assert any("No NVIDIA graphics card" in reason for reason in decision.reasons)
 
 
 def test_controller_staging_only_tracks_differences_from_live_state(tmp_path: Path):
@@ -332,16 +346,23 @@ def test_state_store_persists_app_settings(tmp_path: Path):
     assert loaded == settings
 
 
-def test_profile_inspector_setting_does_not_enable_legacy_nvidia_actions(tmp_path: Path):
+def test_profile_inspector_enables_nvidia_driver_profile_actions(tmp_path: Path):
+    exe = tmp_path / "tools" / "nvidiaProfileInspector.exe"
+    exe.parent.mkdir(parents=True)
+    exe.write_text("stub", encoding="utf-8")
     store = TweakifyStateStore(tmp_path)
-    store.save_settings(AppSettings(nvidia_profile_inspector_path=r"C:\Tools\nvidiaProfileInspector.exe"))
-    controller = build_controller(tmp_path, platform=InMemoryPlatformFacade())
+    store.save_settings(AppSettings(nvidia_profile_inspector_path=str(exe)))
+    platform = InMemoryPlatformFacade(is_admin=True)
+    controller = build_controller(tmp_path, platform=platform)
+    controller.refresh_integrations_only()
 
-    decision = controller.compatibility_by_action["nvidia_set_max_refresh_rate"]
+    assert controller.compatibility_by_action["nvidia_set_max_refresh_rate"].allowed is True
+    controller.stage_action("nvidia_vertical_sync_off", True)
+    transaction = controller.apply_staged()
 
-    assert controller.settings.nvidia_profile_inspector_path.endswith("nvidiaProfileInspector.exe")
-    assert decision.allowed is False
-    assert any("nvidiaInspector.exe" in reason for reason in decision.reasons)
+    assert transaction.results[0].success is True
+    assert platform.nvidia_profile_imports == [{0x00A879CF: 0x08416747}]
+    assert controller.current_state("nvidia_vertical_sync_off") is True
 
 
 def test_light_startup_profile_skips_live_runtime_scans_and_uses_cached_diagnostics(tmp_path: Path, monkeypatch):
@@ -424,7 +445,8 @@ def test_build_runtime_snapshot_avoids_duplicate_inventory_and_reuses_probe_cach
     assert call_counts["startup_inventory"] == 1
     assert call_counts["display_get_current_refresh_rate"] == 1
     assert call_counts["display_get_highest_refresh_rate"] == 1
-    assert call_counts["power_get_active_plan"] == 1
+    # Two power-plan actions each ask once; the probe cache answers both from one query.
+    assert call_counts["power_get_active_plan"] == 2
 
 
 def test_build_runtime_snapshot_can_skip_live_diagnostics_and_keep_cached_snapshot(tmp_path: Path, monkeypatch):

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ctypes
 import json
 import os
 import subprocess
@@ -7,7 +8,13 @@ import sys
 import uuid
 from pathlib import Path
 
-from app.platform.processes import hidden_process_kwargs
+
+SW_SHOWNORMAL = 1
+ERROR_CANCELLED = 1223
+
+
+class ElevationDeclined(RuntimeError):
+    """The user dismissed the UAC prompt, or Windows refused to elevate."""
 
 
 class ElevationManager:
@@ -19,8 +26,8 @@ class ElevationManager:
         self.root.mkdir(parents=True, exist_ok=True)
 
     def write_plan_file(self, payload: dict) -> Path:
-        plan_id = payload.get("plan_id", str(uuid.uuid4()))
-        path = self.root / f"{plan_id}.json"
+        plan_id = str(payload.get("plan_id", uuid.uuid4()))
+        path = self.root / f"{Path(plan_id).name}.json"
         path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
         return path
 
@@ -40,13 +47,19 @@ class ElevationManager:
         return [python_executable, str(self._launcher_path()), "--rollback-snapshot", snapshot_id]
 
     def launch_elevated(self, command: list[str]) -> None:
-        quoted = ", ".join(f"'{item}'" for item in command[1:])
-        subprocess.Popen(
-            [
-                "powershell",
-                "-NoProfile",
-                "-Command",
-                f"Start-Process -FilePath '{command[0]}' -ArgumentList {quoted} -Verb RunAs",
-            ],
-            **hidden_process_kwargs(),
-        )
+        """Start `command` through the UAC prompt.
+
+        ShellExecuteW takes the argument string directly, so paths with spaces or
+        apostrophes survive. The old PowerShell `Start-Process -ArgumentList`
+        route split "C:\\Users\\Jane Doe\\..." into two arguments and broke on "'".
+        """
+        executable, arguments = command[0], subprocess.list2cmdline(command[1:])
+        shell_execute = getattr(getattr(ctypes, "windll", None), "shell32", None)
+        if shell_execute is None:  # pragma: no cover - non-Windows development hosts
+            raise ElevationDeclined("Elevation is only available on Windows.")
+        result = shell_execute.ShellExecuteW(None, "runas", executable, arguments, None, SW_SHOWNORMAL)
+        if int(result) <= 32:
+            # ShellExecuteW returns SE_ERR_ACCESSDENIED (5) when the prompt is dismissed.
+            raise ElevationDeclined(
+                "Administrator permission was not granted, so Tweakify is running without elevation."
+            )
