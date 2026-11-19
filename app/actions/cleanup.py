@@ -3,7 +3,15 @@ from __future__ import annotations
 import os
 from typing import Any
 
-from app.actions.base import BaseEffect, CommandSpec, EffectAction, MaintenanceAction, RegistryPlanAction, RegistryValueSpec
+from app.actions.base import (
+    ActionFailure,
+    BaseEffect,
+    CommandSpec,
+    EffectAction,
+    MaintenanceAction,
+    RegistryPlanAction,
+    RegistryValueSpec,
+)
 from app.actions.helpers import definition
 from app.domain.models import ActionDefinition, ActionKind, RestartRequirement, SafetyTier, Scope
 
@@ -544,4 +552,38 @@ def build_actions(platform) -> list:
             ),
             [ScheduledMaintenanceEffect(platform, WEEKLY_CLEANUP_TASK, WEEKLY_CLEANUP_ACTIONS)],
         ),
+        EffectAction(
+            platform,
+            _maintenance(
+                "free_standby_memory",
+                "Free Standby Memory",
+                "Memory",
+                "Empties the standby page list so cached memory is handed back as free RAM.",
+                "Calls NtSetSystemInformation(MemoryPurgeStandbyList), the same request RAMMap and ISLC make.",
+                "Can stop stutter in games that hit a full standby list, mostly on 8-16 GB systems.",
+                "Files that were cached in RAM have to be read from disk again the next time they are used.",
+                tier=SafetyTier.SAFE,
+            ),
+            [StandbyListPurgeEffect(platform)],
+        ),
     ]
+
+
+class StandbyListPurgeEffect(BaseEffect):
+    stateful = False
+
+    def capture_state(self) -> dict[str, Any]:
+        return {"kind": "command"}
+
+    def restore_state(self, state: Any) -> None:
+        return
+
+    def is_enabled(self) -> bool | None:
+        return None
+
+    def plan_commands(self, target_state: bool) -> list[str]:
+        return ["NtSetSystemInformation(SystemMemoryListInformation, MemoryPurgeStandbyList)"] if target_state else []
+
+    def apply_target(self, target_state: bool) -> None:
+        if target_state and not self.platform.purge_standby_list():
+            raise ActionFailure("Windows refused to empty the standby list. This needs administrator rights.")

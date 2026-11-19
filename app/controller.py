@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -83,11 +84,8 @@ class TweakifyController:
         self.staged_startup_entries: dict[str, bool] = {}
         self.cleanup_sizes: dict[str, int] = {}
         self.last_stage_notice = ""
-        self.machine_context = (
-            self.platform.bootstrap_machine_context()
-            if self.runtime_pending
-            else self.platform.machine_context()
-        )
+        # The full profile replaces this with the probed context from the runtime snapshot below.
+        self.machine_context = self.platform.bootstrap_machine_context()
         if self.runtime_pending:
             self.compatibility_by_action = self._loading_compatibility()
             self.action_states = self._placeholder_action_states()
@@ -95,14 +93,11 @@ class TweakifyController:
             self.startup_inventory_by_id: dict[str, StartupEntry] = {}
             self.diagnostics = self.store.load_diagnostics() or self._placeholder_diagnostics()
         else:
-            self.compatibility_by_action = self._evaluate_actions()
-            self.action_states = self.refresh_action_states()
-            self.startup_inventory = self.refresh_startup_inventory()
-            cached_diagnostics = self.store.load_diagnostics()
-            if self.settings.diagnostics_refresh_on_launch or cached_diagnostics is None:
-                self.diagnostics = self.refresh_diagnostics(startup_inventory=self.startup_inventory)
-            else:
-                self.diagnostics = cached_diagnostics
+            # One cached, parallel probe pass instead of ~115 uncached serial probes
+            # (the CLI path took ~47 s on a real machine before this).
+            self.diagnostics = self.store.load_diagnostics() or self._placeholder_diagnostics()
+            live = self.settings.diagnostics_refresh_on_launch or self.store.load_diagnostics() is None
+            self.apply_runtime_snapshot(self.build_runtime_snapshot(force_live_diagnostics=live))
             self.ensure_baseline_snapshot()
         self.presets = self.refresh_presets()
 
@@ -237,13 +232,27 @@ class TweakifyController:
 
     def build_runtime_snapshot(self, force_live_diagnostics: bool = True) -> dict[str, object]:
         probe_session = self.platform.probe_session() if hasattr(self.platform, "probe_session") else nullcontext()
+        workers = max(1, int(getattr(self.platform, "probe_workers", 1)))
         with probe_session:
-            machine_context = self.platform.machine_context()
-            action_states = {
-                action.definition.id: action.probe()
-                for action in self.actions
-            }
-            startup_inventory = self.platform.startup_inventory()
+            if workers == 1:
+                machine_context = self.platform.machine_context()
+                action_states = {action.definition.id: action.probe() for action in self.actions}
+                startup_inventory = self.platform.startup_inventory()
+                cleanup_sizes = self._scan_cleanup_sizes()
+            else:
+                # Nearly every probe waits on a subprocess (PowerShell, powercfg,
+                # schtasks), so overlapping them is the single biggest win for
+                # time-to-interactive. The platform's probe cache is lock-protected.
+                bind = self._bind_probe_session
+                with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="tweakify-probe") as pool:
+                    context_future = pool.submit(bind(self.platform.machine_context))
+                    inventory_future = pool.submit(bind(self.platform.startup_inventory))
+                    cleanup_future = pool.submit(bind(self._scan_cleanup_sizes))
+                    probe_futures = {action.definition.id: pool.submit(bind(action.probe)) for action in self.actions}
+                    machine_context = context_future.result()
+                    startup_inventory = inventory_future.result()
+                    cleanup_sizes = cleanup_future.result()
+                    action_states = {action_id: future.result() for action_id, future in probe_futures.items()}
             if force_live_diagnostics:
                 diagnostics = self.diagnostics_collector.collect(startup_inventory=startup_inventory)
             else:
@@ -252,7 +261,6 @@ class TweakifyController:
                 action.definition.id: self._evaluate(machine_context, action)
                 for action in self.actions
             }
-            cleanup_sizes = self._scan_cleanup_sizes()
         return {
             "machine_context": machine_context,
             "action_states": action_states,
@@ -261,6 +269,10 @@ class TweakifyController:
             "compatibility_by_action": compatibility,
             "cleanup_sizes": cleanup_sizes,
         }
+
+    def _bind_probe_session(self, fn):
+        binder = getattr(self.platform, "bind_probe_session", None)
+        return binder(fn) if binder is not None else fn
 
     def _scan_cleanup_sizes(self) -> dict[str, int]:
         estimator = getattr(self.platform, "cleanup_estimate", None)
@@ -849,15 +861,29 @@ class TweakifyController:
         return manifest
 
     def _capture_baseline(self, label: str, notes: str) -> SnapshotManifest:
-        entries: list[SnapshotEntry] = []
-        for action in self.actions:
-            if action.definition.kind != ActionKind.SETTING:
-                continue
+        def read(action):
             try:
-                before_state = action.capture_state()
-                enabled = action.is_enabled()
+                return action.capture_state(), action.is_enabled()
             except Exception:
+                return None
+
+        settings_actions = [action for action in self.actions if action.definition.kind == ActionKind.SETTING]
+        workers = max(1, int(getattr(self.platform, "probe_workers", 1)))
+        probe_session = self.platform.probe_session() if hasattr(self.platform, "probe_session") else nullcontext()
+        # Nothing is written while a baseline is captured, so one cached, parallel
+        # read pass is safe (it took ~25 s serially on first launch).
+        with probe_session:
+            if workers == 1:
+                readings = [read(action) for action in settings_actions]
+            else:
+                bound = self._bind_probe_session(read)
+                with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="tweakify-baseline") as pool:
+                    readings = list(pool.map(bound, settings_actions))
+        entries: list[SnapshotEntry] = []
+        for action, reading in zip(settings_actions, readings):
+            if reading is None:
                 continue
+            before_state, enabled = reading
             entries.append(
                 SnapshotEntry(
                     action_id=action.definition.id,

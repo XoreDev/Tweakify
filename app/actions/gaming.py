@@ -222,4 +222,34 @@ def build_actions(platform) -> list:
                 RegistryValueSpec(r"HKCU\Software\Microsoft\GameBar", "GamePanelStartupTipIndex", "REG_DWORD", 3),
             ],
         ),
+        RegistryPlanAction(
+            platform,
+            definition(
+                "disable_vbs_memory_integrity",
+                "Disable VBS and Memory Integrity",
+                "gaming",
+                "Security vs. FPS",
+                "Turns off Virtualization-Based Security and Memory Integrity (HVCI).",
+                "Sets EnableVirtualizationBasedSecurity=0 under DeviceGuard and HVCI Enabled=0. Turning it off removes both values.",
+                "VBS/HVCI can cost a measurable share of FPS in CPU-bound games. Microsoft documents disabling it for gaming.",
+                "Removes a kernel-level defense against driver and memory exploits. Some anti-cheat and corporate policies require it.",
+                rollback="Restores both values from the snapshot. A restart is needed either way.",
+                restart=RestartRequirement.RESTART,
+                tier=SafetyTier.ADVANCED,
+            ),
+            [
+                RegistryValueSpec(
+                    r"HKLM\SYSTEM\CurrentControlSet\Control\DeviceGuard",
+                    "EnableVirtualizationBasedSecurity",
+                    "REG_DWORD",
+                    0,
+                ),
+                RegistryValueSpec(
+                    r"HKLM\SYSTEM\CurrentControlSet\Control\DeviceGuard\Scenarios\HypervisorEnforcedCodeIntegrity",
+                    "Enabled",
+                    "REG_DWORD",
+                    0,
+                ),
+            ],
+        ),
     ]

@@ -2,6 +2,72 @@
 
 All notable changes to Tweakify. Versions follow [Semantic Versioning](https://semver.org/).
 
+## [1.2.0] - 2026-11-19
+
+A ground-up rebuild of the interface, a much faster scan, a live system monitor, and six new tweaks.
+Tweaks: 115 -> 121. Tests: 130 -> 153.
+
+### Highlights
+
+- **New interface, rebuilt from scratch.** A new "Obsidian" design system: near-black surfaces, one accent
+  color you pick (light-blue Sky by default, or Volt, Cyan, Azure, Ember, Rose), dense tweak lists instead of card stacks, animated
+  switches, and a dashboard built around one health gauge and live data.
+- **Live monitor.** CPU, memory, GPU, and disk activity with one-minute sparklines on the dashboard, plus a
+  compact readout in the top bar. It uses direct Windows APIs (about 0.5 ms per sample), pauses while
+  the window is minimized, and never starts a subprocess.
+- **Command palette (Ctrl+K).** Jump to any page or tweak, or run a command (Optimize now, Rescan,
+  Free memory, Restore point, Ping test, Apply) from the keyboard.
+- **3x faster scan.** Tweak states are now read in parallel: the background scan went from 14.1 s to
+  4.6 s on a real machine, and the command-line startup path from 47 s to 7 s.
+
+### Interface
+
+- Navigation rail with section labels and Ctrl+1..9 page shortcuts; top bar with search, live readout,
+  elevation status, and a Review button that shows how many changes are waiting.
+- The review panel slides in when you stage something and gets out of the way when the plan is empty
+  (pin it open in Settings). Each staged change can be removed individually, and Apply shows the count.
+- Every tweak page has filters (All, Recommended, Active, Pending), live counts, and an
+  "Enable recommended" button that stages only the Safe tweaks that are still off.
+- Tweak rows show the current state, the pending change, a colored tier badge only when a tweak is not
+  Safe, and an expandable panel with what it changes, why it helps, the trade-off, and the rollback.
+- Dashboard: animated health gauge with findings, "Optimize now" (stages recommended fixes), system facts
+  with warning colors, quick actions (Free memory, Restore point, Ping test, Task Manager), and recent
+  activity.
+- Toast confirmations for applies, restore points, rollbacks, and quick actions.
+- Settings rebuilt as Windows-style rows with switches, an accent picker, and plain-language descriptions.
+- Compatibility lists each blocked tweak with its reason; Restore shows snapshots and details side by side.
+- The loading screen uses your saved theme and accent.
+- Reduced motion turns off every animation (switches, gauge, page fades, toasts).
+
+### Added tweaks
+
+- **Disable VBS and Memory Integrity** (Gaming, Advanced): turns off Virtualization-Based Security and HVCI.
+- **Disable Automatic Maintenance** (Performance, Advanced): stops surprise idle-time maintenance spikes.
+- **Disable 8.3 Short Name Creation** (Performance, Advanced): faster file creation in large folders.
+- **Disable Update Peer-to-Peer Upload** (Network, Safe): stops Delivery Optimization uploading to other PCs.
+- **Disable Transparency Effects** (Input + UI, Safe): less GPU composition work on weaker graphics.
+- **Free Standby Memory** (Cleanup, one-time): empties the standby list, like RAMMap or ISLC. Also a
+  dashboard quick action.
+
+### Performance and reliability
+
+- Tweak probes, the machine-context probe, the startup inventory, and the cleanup size scan run on a
+  thread pool. The first-launch baseline capture is parallel and cached too.
+- The probe cache is now scoped to the scan that opened it. Before, an Apply that ran while a background
+  scan was in progress could read cached (stale) values for its before/after checks.
+- Concurrent probes for the same value share one PowerShell call instead of each starting their own.
+- After a rescan or apply, the tweak lists are updated in place when the catalog has not changed instead
+  of rebuilding about 120 widgets, and rows skip redrawing when nothing about them changed.
+- Preset cards are reused across refreshes.
+- Closing the window during an apply or rollback now waits for it to finish instead of cutting it off.
+- A background task that finishes after the window closed no longer raises an error.
+
+### Fixed
+
+- A unit test reached the real "relaunch as administrator" path and could leave a UAC prompt waiting,
+  which stalled the test run. Tests can no longer trigger a real elevation.
+- "Use Google Public DNS DNS" is now "Use Google Public DNS".
+
 ## [1.1.0] - 2026-11-18
 
 A full audit of 1.0.0, a redesigned interface, and features drawn from a survey of
@@ -131,5 +197,6 @@ Tweaks: 63 -> 115. Tests: 92 -> 130.
 
 First public release of the rebuilt Tweakify: staged review panel, diagnostics, presets, startup manager, snapshots with rollback, and a portable source package.
 
+[1.2.0]: https://github.com/XoreDev/Tweakify/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/XoreDev/Tweakify/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/XoreDev/Tweakify/releases/tag/v1.0.0

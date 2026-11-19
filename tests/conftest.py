@@ -18,6 +18,17 @@ CONSOLE_LAUNCHER = ROOT / "Tweakify.py"
 GUI_LAUNCHER = ROOT / "Tweakify.pyw"
 
 
+@pytest.fixture(autouse=True)
+def _no_real_uac_relaunch(monkeypatch):
+    """A test that reached the real relaunch would pop a UAC prompt and hang the run."""
+    import app.__main__ as app_main
+
+    def refuse(_argv):
+        raise AssertionError("tests must not trigger a real UAC relaunch; patch _is_running_as_admin")
+
+    monkeypatch.setattr(app_main, "_relaunch_as_admin", refuse)
+
+
 @pytest.fixture(scope="session")
 def qapp():
     app = QApplication.instance()

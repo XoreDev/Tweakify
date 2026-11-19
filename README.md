@@ -13,26 +13,27 @@ Open-source Windows optimizer with a staged review workflow. Every tweak shows e
 
 Tweakify originally started as a small collaborative project, but was eventually abandoned. After three years, I revived and rebuilt it from the ground up, fixing major issues, improving stability, and turning it into a usable tool. It is now a functional, open-source Windows optimizer focused on performance, clarity, and transparency, so users can see exactly what they're running on their systems.
 
-## What's New in 1.1
+## What's New in 1.2
 
-- **115 tweaks** across Startup, Performance, Gaming, Network, Privacy, Services, Cleanup, Input + UI, and Graphics (up from 63).
-- **System health score** with explained findings, a recoverable-space scan, and one-click **Stage Recommended Fixes** (Safe tweaks only).
-- **Privacy page**: Copilot, Recall, advertising ID, Start and lock screen ads, Bing in Start, activity history, typing data, Office telemetry.
-- **Gaming page**: per-game High CPU/I/O priority, foreground priority, MMCSS, core parking, power throttling, C-states, forced-HPET removal.
-- **Real NVIDIA driver settings** through NVIDIA Profile Inspector: power mode, V-Sync, low latency, refresh rate, texture filtering.
-- **Repair and maintenance**: SFC, DISM, WinSxS cleanup, network reset, winget "update all apps", bloat app removal, weekly automatic cleanup.
-- **Redesigned interface** with dark and light themes, sidebar search, plan export/import, and a command line for headless runs.
-- **About 30 bug fixes**, including service tweaks that never applied, a temp cleaner that deleted nothing, and fake NVIDIA commands.
+- **Rebuilt interface.** A new design system with a pickable accent color, dense tweak lists with filters, animated switches, and a review panel that appears when you stage something.
+- **Live monitor.** CPU, memory, GPU, and disk activity with sparklines, read straight from Windows APIs.
+- **Command palette.** Press Ctrl+K to jump to any tweak or page, or run a command.
+- **3x faster scan.** Tweak states are read in parallel (14 s -> under 5 s on a real machine).
+- **121 tweaks**, including VBS/Memory Integrity, automatic maintenance, 8.3 names, update peer-to-peer upload, transparency effects, and a one-click Free Standby Memory.
+
+Version 1.1 added the health score, the Privacy and Gaming pages, real NVIDIA driver settings, repair tools, and about 30 bug fixes.
 
 Full details: [CHANGELOG.md](CHANGELOG.md). The research behind the feature set, covering 44 paid, free, and community optimizers, is in [docs/competitive-research.md](docs/competitive-research.md).
 
 ## Screenshots
 
-| Privacy | Gaming |
+| Review before you apply | Command palette (Ctrl+K) |
 |---|---|
-| ![Privacy page](docs/screenshots/privacy.png) | ![Gaming page](docs/screenshots/gaming.png) |
-| **Cleanup and repair** | **Light theme** |
-| ![Cleanup page](docs/screenshots/cleanup.png) | ![Light theme](docs/screenshots/dashboard-light.png) |
+| ![Review panel](docs/screenshots/review.png) | ![Command palette](docs/screenshots/palette.png) |
+| **Gaming** | **Light theme** |
+| ![Gaming page](docs/screenshots/gaming.png) | ![Light theme](docs/screenshots/dashboard-light.png) |
+| **Presets** | **Settings** |
+| ![Presets page](docs/screenshots/presets.png) | ![Settings page](docs/screenshots/settings.png) |
 
 ## How It Works
 
@@ -47,7 +48,7 @@ Safety tiers are color-coded: **Safe** tweaks are broadly agreed on, **Advanced*
 
 ### Portable release
 
-1. Download `Tweakify-v1.1.0-portable.rar` from the [latest release](https://github.com/XoreDev/Tweakify/releases/latest) and extract it.
+1. Download `Tweakify-v1.2.0-portable.rar` from the [latest release](https://github.com/XoreDev/Tweakify/releases/latest) and extract it.
 2. Run `install_requirements.bat`. It installs Python 3.13 with winget if needed, then PySide6.
 3. Run `Tweakify.pyw`, or `py Tweakify.py` for a console window.
 

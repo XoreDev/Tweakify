@@ -44,6 +44,8 @@ def test_console_launch_does_not_render_ascii_loading_banner(monkeypatch):
     output = _TtyBuffer()
     monkeypatch.setattr(sys, "stdout", output)
     monkeypatch.setattr(app_main, "_run_interactive_session", lambda *_args, **_kwargs: 0)
+    # Never let a unit test reach the real UAC relaunch (it blocks on a consent prompt).
+    monkeypatch.setattr(app_main, "_is_running_as_admin", lambda: True)
 
     exit_code = app_main.main([], launch_mode="console")
 

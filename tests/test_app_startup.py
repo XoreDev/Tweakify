@@ -24,9 +24,10 @@ def test_light_startup_window_disables_controls_and_requests_background_refresh(
     card = window.action_cards["disable_telemetry"]
 
     assert card.toggle.isEnabled() is False
-    assert card.current_state_chip.text() == "Loading"
-    assert "loading" in window.dashboard_page.summary_caption.text().lower()
-    assert "loading" in window.startup_entries_panel.summary_label.text().lower()
+    assert card.current_state_chip.text() == "Scanning"
+    assert "background" in window.dashboard_page.summary_caption.text().lower()
+    assert "scanning" in window.startup_entries_panel.summary_label.text().lower()
+    assert window.dashboard_page.stage_fixes_button.isEnabled() is False
 
     window.close()
 

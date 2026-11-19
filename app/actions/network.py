@@ -18,7 +18,7 @@ from app.domain.models import ActionDefinition, RestartRequirement, SafetyTier, 
 
 DNS_PROVIDERS = {
     "dns_cloudflare": ("Cloudflare", ["1.1.1.1", "1.0.0.1"], "Usually the fastest public resolver, with a no-logging policy."),
-    "dns_google": ("Google Public DNS", ["8.8.8.8", "8.8.4.4"], "Very reliable worldwide anycast resolver."),
+    "dns_google": ("Google Public", ["8.8.8.8", "8.8.4.4"], "Very reliable worldwide anycast resolver."),
     "dns_quad9": ("Quad9", ["9.9.9.9", "149.112.112.112"], "Blocks known malware and phishing domains at the resolver."),
 }
 
@@ -362,5 +362,21 @@ def build_actions(platform) -> list:
                 tier=SafetyTier.ADVANCED,
             ),
             [policy(r"HKLM\SOFTWARE\Policies\Microsoft\Windows\TCPIP\v6Transition", "Teredo_State", "Disabled", "REG_SZ")],
+        ),
+        RegistryPlanAction(
+            platform,
+            definition(
+                "disable_delivery_optimization_p2p",
+                "Disable Update Peer-to-Peer Upload",
+                "network",
+                "Background Traffic",
+                "Stops Windows Update from uploading pieces of updates to other PCs.",
+                "Sets the Delivery Optimization DODownloadMode policy to 0 (HTTP only, no peering).",
+                "Frees upload bandwidth that Delivery Optimization can use in the background, which helps ping on slow uplinks.",
+                "PCs on the same network can no longer share update downloads with each other.",
+                rollback="Removes the policy again.",
+                tier=SafetyTier.SAFE,
+            ),
+            [policy(r"HKLM\SOFTWARE\Policies\Microsoft\Windows\DeliveryOptimization", "DODownloadMode", 0)],
         ),
     ]

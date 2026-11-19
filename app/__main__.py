@@ -330,9 +330,22 @@ def _apply_cli_request(controller: TweakifyController, args: argparse.Namespace)
     return None
 
 
+def _saved_appearance() -> tuple[str, str | None]:
+    """Theme and accent from settings.json, read without creating any state."""
+    theme_mode, accent = _windows_theme_mode(), None
+    try:
+        payload = json.loads((_data_root() / "settings.json").read_text(encoding="utf-8"))
+        if payload.get("theme_mode") in {"light", "dark"}:
+            theme_mode = payload["theme_mode"]
+        accent = payload.get("accent_color")
+    except (OSError, ValueError, AttributeError):
+        pass
+    return theme_mode, accent
+
+
 def _create_loading_splash(_app: QApplication, message: str = LOADING_MESSAGE) -> QSplashScreen:
-    theme_mode = _windows_theme_mode()
-    tokens = palette_for(theme_mode)
+    theme_mode, accent = _saved_appearance()
+    tokens = palette_for(theme_mode, accent)
     pixmap = QPixmap(*SPLASH_SIZE)
     pixmap.fill(Qt.transparent)
 
@@ -348,7 +361,9 @@ def _create_loading_splash(_app: QApplication, message: str = LOADING_MESSAGE) -
     painter.setPen(QPen(QColor(tokens.border), 1))
     painter.drawRoundedRect(card, 14, 14)
     painter.end()
-    return LoadingSplash(pixmap, message, theme_mode)
+    splash = LoadingSplash(pixmap, message, theme_mode)
+    splash.palette_tokens = tokens
+    return splash
 
 
 def _exec_application(app: QApplication) -> int:

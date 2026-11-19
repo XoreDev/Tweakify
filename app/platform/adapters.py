@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextvars
 import ctypes
 import hashlib
 import io
@@ -10,6 +11,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import threading
 import urllib.request
 import zipfile
 from contextlib import contextmanager
@@ -58,11 +60,73 @@ def _folder_size(path: Path, limit_files: int = 200_000) -> int:
     return total
 
 
-class InMemoryPlatformFacade:
+_PROBE_SESSION: contextvars.ContextVar["_ProbeSession | None"] = contextvars.ContextVar("tweakify_probe_session", default=None)
+
+
+class _ProbeSession:
+    def __init__(self, owner: object) -> None:
+        self.owner = owner
+        self.values: dict[tuple[object, ...], Any] = {}
+        self.lock = threading.Lock()
+        self.key_locks: dict[tuple[object, ...], threading.Lock] = {}
+
+
+class ProbeCacheMixin:
+    """Memoize read-only probes for the duration of a `probe_session()`.
+
+    The session lives in a ContextVar, not on the facade, so it only covers the
+    code that opened it (and worker threads started through `bind_probe_session`).
+    An Apply running on another thread while a background scan is open always
+    reads live values. A per-key lock lets concurrent workers share one
+    subprocess for the same value instead of each spawning their own.
+    """
+
+    @contextmanager
+    def probe_session(self):
+        current = _PROBE_SESSION.get()
+        if current is not None and current.owner is self:
+            yield
+            return
+        token = _PROBE_SESSION.set(_ProbeSession(self))
+        try:
+            yield
+        finally:
+            _PROBE_SESSION.reset(token)
+
+    def bind_probe_session(self, fn):
+        """Wrap `fn` so it runs inside the caller's probe session on a worker thread."""
+        session = _PROBE_SESSION.get()
+
+        def run(*args, **kwargs):
+            token = _PROBE_SESSION.set(session)
+            try:
+                return fn(*args, **kwargs)
+            finally:
+                _PROBE_SESSION.reset(token)
+
+        return run
+
+    def _cached_probe(self, key: tuple[object, ...], loader):
+        session = _PROBE_SESSION.get()
+        if session is None or session.owner is not self:
+            return loader()
+        with session.lock:
+            if key in session.values:
+                return session.values[key]
+            key_lock = session.key_locks.setdefault(key, threading.Lock())
+        with key_lock:
+            with session.lock:
+                if key in session.values:
+                    return session.values[key]
+            value = loader()
+            with session.lock:
+                session.values[key] = value
+            return value
+
+
+class InMemoryPlatformFacade(ProbeCacheMixin):
     def __init__(self, is_admin: bool = False) -> None:
         self.is_admin = is_admin
-        self._probe_cache: dict[tuple[object, ...], Any] | None = None
-        self._probe_cache_depth = 0
         self.registry: dict[tuple[str, str], Any] = {}
         self.registry_types: dict[tuple[str, str], str] = {}
         self.services: dict[str, dict[str, Any]] = {
@@ -192,25 +256,6 @@ class InMemoryPlatformFacade:
 
     def snapshot_writer(self) -> SnapshotWriter:
         return SnapshotWriter()
-
-    @contextmanager
-    def probe_session(self):
-        self._probe_cache_depth += 1
-        if self._probe_cache is None:
-            self._probe_cache = {}
-        try:
-            yield
-        finally:
-            self._probe_cache_depth -= 1
-            if self._probe_cache_depth == 0:
-                self._probe_cache = None
-
-    def _cached_probe(self, key: tuple[object, ...], loader):
-        if self._probe_cache is None:
-            return loader()
-        if key not in self._probe_cache:
-            self._probe_cache[key] = loader()
-        return self._probe_cache[key]
 
     def set_dependency_path(self, name: str, path: str | Path | None) -> None:
         if path:
@@ -557,6 +602,15 @@ class InMemoryPlatformFacade:
     def open_task_manager(self) -> None:
         self.command_log.append("taskmgr")
 
+    def create_live_sampler(self):
+        from app.platform.live import SyntheticLiveSampler
+
+        return SyntheticLiveSampler()
+
+    def purge_standby_list(self) -> bool:
+        self.command_log.append("purge-standby-list")
+        return self.is_admin
+
     def system_theme_mode(self) -> str:
         return self.app_theme_mode
 
@@ -618,8 +672,11 @@ class InMemoryPlatformFacade:
         self.command_log.append(f"net-feature:{feature}={enabled}")
 
 
-class WindowsPlatformFacade:
+class WindowsPlatformFacade(ProbeCacheMixin):
     supports_elevated_helper = True
+    # Most probes wait on a PowerShell/powercfg/schtasks subprocess, so a small
+    # thread pool overlaps them (14 s -> ~3 s on a typical machine).
+    probe_workers = 8
 
     def __init__(
         self,
@@ -627,8 +684,6 @@ class WindowsPlatformFacade:
         data_root: Path | str | None = None,
     ) -> None:
         self.workspace_root = Path(workspace_root or Path(__file__).resolve().parents[2])
-        self._probe_cache: dict[tuple[object, ...], Any] | None = None
-        self._probe_cache_depth = 0
         self._snapshot_writer_factory = SnapshotWriter
         self.dependency_overrides: dict[str, Path] = {}
         self.local_app_data = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
@@ -641,25 +696,6 @@ class WindowsPlatformFacade:
 
     def snapshot_writer(self) -> SnapshotWriter:
         return self._snapshot_writer_factory()
-
-    @contextmanager
-    def probe_session(self):
-        self._probe_cache_depth += 1
-        if self._probe_cache is None:
-            self._probe_cache = {}
-        try:
-            yield
-        finally:
-            self._probe_cache_depth -= 1
-            if self._probe_cache_depth == 0:
-                self._probe_cache = None
-
-    def _cached_probe(self, key: tuple[object, ...], loader):
-        if self._probe_cache is None:
-            return loader()
-        if key not in self._probe_cache:
-            self._probe_cache[key] = loader()
-        return self._probe_cache[key]
 
     def _run_hidden(self, command: list[str], **kwargs):
         return subprocess.run(command, **hidden_process_kwargs(), **kwargs)
@@ -1858,6 +1894,19 @@ class WindowsPlatformFacade:
     def open_task_manager(self) -> None:
         # Popen, not run: run() blocked the GUI thread until Task Manager closed.
         subprocess.Popen(["taskmgr.exe"])
+
+    def create_live_sampler(self):
+        from app.platform.live import SyntheticLiveSampler, WindowsLiveSampler
+
+        try:
+            return WindowsLiveSampler()
+        except (AttributeError, OSError):
+            return SyntheticLiveSampler()
+
+    def purge_standby_list(self) -> bool:
+        from app.platform.live import purge_standby_list
+
+        return purge_standby_list()
 
     def open_external_url(self, url: str) -> None:
         try:

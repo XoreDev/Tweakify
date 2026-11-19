@@ -198,4 +198,44 @@ def build_actions(platform) -> list:
             ),
             [MemoryAgentEffect(platform, "MemoryCompression", enabled_value=False)],
         ),
+        RegistryPlanAction(
+            platform,
+            definition(
+                "disable_8dot3_name_creation",
+                "Disable 8.3 Short Name Creation",
+                "performance",
+                "File System",
+                "Stops NTFS from generating legacy DOS 8.3 short names for every new file.",
+                "Sets NtfsDisable8dot3NameCreation to 1 (disabled on all volumes). Windows' default is 2 (per volume).",
+                "Speeds up file creation in folders with many files, such as game installs, caches, and build trees.",
+                "Very old 16-bit installers that need short names can fail. Existing short names are kept.",
+                rollback="Restores the previous value from the snapshot.",
+                restart=RestartRequirement.RESTART,
+                tier=SafetyTier.ADVANCED,
+            ),
+            [setting(r"HKLM\SYSTEM\CurrentControlSet\Control\FileSystem", "NtfsDisable8dot3NameCreation", 1, 2)],
+        ),
+        RegistryPlanAction(
+            platform,
+            definition(
+                "disable_automatic_maintenance",
+                "Disable Automatic Maintenance",
+                "performance",
+                "Background Work",
+                "Stops Windows' idle-time maintenance window from waking up on its own.",
+                "Sets MaintenanceDisabled=1 under Schedule\\Maintenance. Turning it off deletes the value.",
+                "Prevents surprise disk and CPU spikes from defrag, diagnostics, and app updates during play.",
+                "Drive optimization and some Windows housekeeping only run when you start them. Pair with Weekly Automatic Cleanup.",
+                rollback="Deletes the value again.",
+                tier=SafetyTier.ADVANCED,
+            ),
+            [
+                RegistryValueSpec(
+                    r"HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Schedule\Maintenance",
+                    "MaintenanceDisabled",
+                    "REG_DWORD",
+                    1,
+                )
+            ],
+        ),
     ]

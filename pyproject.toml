@@ -1,6 +1,6 @@
 [project]
 name = "tweakify"
-version = "1.1.0"
+version = "1.2.0"
 description = "A PySide6 Windows tuning dashboard with staged review, diagnostics, and portable packaging."
 readme = "README.md"
 requires-python = ">=3.13"

@@ -341,4 +341,36 @@ def build_actions(platform) -> list:
                 ShellRefreshEffect(platform, refresh_explorer=True),
             ],
         ),
+        EffectAction(
+            platform,
+            ActionDefinition(
+                id="disable_transparency_effects",
+                title="Disable Transparency Effects",
+                module_id="input_ui",
+                legacy_label="disable_transparency_effects",
+                description="Turns off the acrylic and Mica blur behind the taskbar, Start, and Settings.",
+                what_it_changes="Sets EnableTransparency to 0 under Themes\\Personalize.",
+                why_it_may_help="Saves GPU composition work, which helps integrated graphics and older GPUs.",
+                downside="The taskbar and Start menu become solid instead of translucent.",
+                rollback="Restores the previous EnableTransparency value from the snapshot.",
+                scope=Scope.USER,
+                restart_requirement=RestartRequirement.NONE,
+                safety_tier=SafetyTier.SAFE,
+                public_group="Desktop",
+            ),
+            [
+                RegistryEffect(
+                    platform,
+                    RegistryValueSpec(
+                        r"HKCU\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize",
+                        "EnableTransparency",
+                        "REG_DWORD",
+                        0,
+                        disabled_value=1,
+                        delete_on_disable=False,
+                    ),
+                ),
+                ShellRefreshEffect(platform, broadcast_key="ImmersiveColorSet"),
+            ],
+        ),
     ]

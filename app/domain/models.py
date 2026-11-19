@@ -362,6 +362,7 @@ class StartupEntry:
 @dataclass(slots=True)
 class AppSettings:
     theme_mode: str = "system"
+    accent_color: str = "sky"
     accent_intensity: float = 0.62
     compact_mode: bool = False
     reduced_motion: bool = False
@@ -370,7 +371,8 @@ class AppSettings:
     confirm_before_apply: bool = True
     auto_capture_baseline: bool = True
     auto_restore_point_advanced: bool = True
-    review_tray_open: bool = True
+    # 1.2: the review panel slides in when changes are staged; this pins it open.
+    review_tray_open: bool = False
     auto_open_review_drawer: bool = True
     diagnostics_refresh_on_launch: bool = True
     diagnostics_refresh_interval_seconds: int = 300
